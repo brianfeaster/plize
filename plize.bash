@@ -31,7 +31,7 @@ function spawnTasks () {
 }
 
 function waitForAllTasks () {
-    local count=$((2+${#commands})) pid ret cmd
+    local count=$((1+${#commands[@]})) pid ret cmd
     while ((--count))
     do
         echo "$IMAGENTA[Waiting on $count tasks]$NORM"
