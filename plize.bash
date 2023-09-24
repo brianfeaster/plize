@@ -21,8 +21,8 @@ function spawnTasks () {
     for cmd in "${commands[@]}"
     do
         $cmd \
-            2> >(while read -r l; do echo "$RED[$taskId]$NORM $l"; done) \
-            1> >(while read -r l; do echo "$GREEN[$taskId]$NORM $l"; done) \
+            2> >(while read -r l; do echo "$RED[$BASHPID]$NORM $l"; done) \
+            1> >(while read -r l; do echo "$GREEN[$BASHPID]$NORM $l"; done) \
             &
         pid2cmd[$!]=$cmd
         echo "$IMAGENTA[Spawned pid $!]$NORM $cmd"
