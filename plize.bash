@@ -1,6 +1,6 @@
 #!/bin/bash
 
-function parallelize () (
+function parallelize () {
     set +e
     local NORM=$'\e[0m'
     local RED=$'\e[0;31m'
@@ -14,13 +14,13 @@ function parallelize () (
 
     spawnTasks
     waitForAllTasks
-)
+}
 
 function spawnTasks () {
     local cmd
     for cmd in "${commands[@]}"
     do
-        $cmd \
+        ( eval $cmd ) \
             2> >(while read -r l; do echo "$RED[$BASHPID]$NORM $l"; done) \
             1> >(while read -r l; do echo "$GREEN[$BASHPID]$NORM $l"; done) \
             &
