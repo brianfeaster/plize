@@ -20,13 +20,20 @@ function spawnTasks () {
     local cmd
     for cmd in "${commands[@]}"
     do
-        ( eval $cmd ) \
-            2> >(while read -r l; do echo "$RED[$BASHPID]$NORM $l"; done) \
-            1> >(while read -r l; do echo "$GREEN[$BASHPID]$NORM $l"; done) \
-            &
-        pid2cmd[$!]=$cmd
-        echo "$IMAGENTA[Spawned pid $!]$NORM $cmd"
+        spawnCmd
     done
+    return 0
+}
+
+
+function spawnCmd () {
+    ( eval  "echo $BASHPID; echo $BASHPID 1>&2; $cmd" )\
+        2> >(read -r pid; while read -r l; do echo "$RED[$pid]$NORM $l"; done) \
+        1> >(read -r pid; while read -r l; do echo "$GREEN[$pid]$NORM $l"; done) \
+        &
+    pid=$!
+    pid2cmd[$pid]=$cmd
+    echo "$IMAGENTA[Spawned pid $!]$NORM $cmd"
     return 0
 }
 
@@ -35,22 +42,25 @@ function waitForAllTasks () {
     while ((--count))
     do
         echo "$IMAGENTA[Waiting on $count tasks]$NORM"
-        waitForNextPid
+        wait -p pid -n ${!pid2cmd[@]} 2>/dev/null
         ret=$?
         cmd=${pid2cmd[$pid]}
         if ((ret))
         then
             reportTaskFail
+
+            ## Respawn if failed
+            #echo "$IMAGENTA[Re-spawning $pid]$NORM $cmd"
+            #unset pid2cmd[pid]
+            #spawnCmd
+            #((++count))
+
             return $ret
         else
             reportTaskCompleted
         fi
     done
     return 0
-}
-
-function waitForNextPid () {
-    wait -p pid -n ${!pid2cmd[@]} 2>/dev/null
 }
 
 function reportTaskFail () {
