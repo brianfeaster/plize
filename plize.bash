@@ -2,7 +2,7 @@
 
 function parallelize () {
     local -
-    set +e
+    set +e +m
 
     local NORM=$'\e[m'
     local RED=$'\e[0;31m'
@@ -16,9 +16,14 @@ function parallelize () {
     local IMAGENTA=$'\e[1;35m'
     local WHITE=$'\e[1;37m'
 
+    local help=0
+    local dryrun=0
     local quiet=0
     local debug=0
-    parseCommandArgs $*
+    local cpus=3
+    parseCommandArgs "$*"
+
+    ((help)) && { help; return; }
 
     declare -A tasks=()
     declare -A taskStates=()
@@ -28,19 +33,22 @@ function parallelize () {
     ((debug)) && prettyPrintEverything
     #printGraph
 
-    local cpuMax=3
-    scheduler
-
-    ((debug)) && prettyPrintEverything
+    if ((!dryrun))
+    then
+        scheduler
+        ((debug)) && prettyPrintEverything
+    fi
 }
 
 ########################################
 
 function parseCommandArgs () {
-    [[ $* =~ -h ]] && { help; exit 0; }
+    [[ $* =~ -h ]] && help=1
+    [[ $* =~ -d ]] && dryrun=1
     [[ $* =~ -q ]] && quiet=1
     [[ $* =~ -v ]] && debug=1
     [[ $* =~ -vv ]] && debug=2
+    [[ $* =~ -c\ *([0-9]+) ]] && cpus=BASH_REMATCH[1]
 }
 
 function help () {
@@ -50,19 +58,24 @@ NAME
     Parallelize
 
 USAGE
-    parallelize [-q] [-v | -vv]
+    parallelize [-h] [-c CPUs] [-d] [-q] [-v | -vv]
 
     Reads Tasks and Dependency Specification (see below) via STDIN
 
 OPTIONS
+    -h  Help/manual
+    -c  CPU/threads/process limit
+    -d  Dry run
     -q  Quiet prefixed task info for all job output
     -v  Verbose runtime details
-    -vv Verbose runtime deatils including dependency graph
+    -vv Verbose plus dependency graph details
 
 Task and Dependency Specification
 
   One or more lines: taskId bashCommand
   Last line: = dependencySexper
+
+  The bash command must be on a single line.
 
   Example:
 
@@ -72,17 +85,19 @@ task2 cargo run | cat -n
 
 Dependency Graph Syntax
 
- A prefix expression (Scheme/Lisp expressions) where:
-   * runs tasks in parallel
-   + runs tasks consecutively
+  A prefix expression (Scheme/Lisp expressions) where:
+    * runs tasks in parallel
+    + runs tasks consecutively
+
+  TaskIDs can be used more than once in the graph but will only run one.
 
 Example
 
- (* A (+ B (* C D) E) F)
+(* A (+ B (* C D) A E) F)
 
- The following will run A and F in parallel along with the middle group
- (+ B (* C D) E).  The middle group runs sequentally B followed by (* C D),
- where C and D run in parallel, and finally E.
+  The following will run A and F in parallel along with the middle group
+  (+ B (* C D) E A).  The middle group runs sequentally B followed by (* C D),
+  where C and D run in parallel, and finally E with A already having run.
 BLOCK
 }
 
@@ -113,6 +128,7 @@ function sexpr2tokens () {
 function tokens2graph () {
     local c token=$1
     declare -n p=graph$token
+    ((token)) && p=()
     while read -r c
     do
       case $c in
@@ -129,10 +145,7 @@ function tokens2graph () {
 function scheduler () {
     declare -A pid2task=()
 
-    while ((${#pid2task[*]} < cpuMax))
-    do
-        spawnNextFree 0
-    done
+    while ((${#pid2task[*]} < cpus)) && spawnNextFree 0; do :; done
 
     while waitForATask
     do
@@ -238,9 +251,8 @@ function prettyPrintEverything () {
     do
         echo " $GREEN$k $YELLOW${taskStates[$k]} $NORM${tasks[$k]}"
     done
-    echo -e "${WHITE}GRAPH$NORM"
-    printf " "
-    ((2<=debug)) && prettyPrintGraph 0
+    echo -ne "${WHITE}GRAPH$NORM\n "
+    prettyPrintGraph 0
     echo
 }
 
