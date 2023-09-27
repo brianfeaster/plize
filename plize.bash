@@ -28,7 +28,11 @@ function parallelize () {
     declare -A tasks=()
     declare -A taskStates=()
     graph0=("*")
-    readTasksAndGraph
+    readTasksAndGraph || {
+        printf "$IRED[EXCEPTION dependency graph missing one or more tasks]$NORM"
+        prettyPrintEverything
+        exit 2
+    }
 
     ((debug)) && prettyPrintEverything
     #printGraph
@@ -55,53 +59,77 @@ function help () {
     cat <<BLOCK
 
 NAME
-    Parallelize
+  Parallelize
 
 USAGE
-    parallelize [-h] [-c CPUs] [-d] [-q] [-v | -vv]
+  parallelize [-h] [-c CPUs] [-d] [-q] [-v | -vv]
 
-    Reads Tasks and Dependency Specification (see below) via STDIN
+  Reads Tasks and Dependency Specification (see below) via STDIN
 
 OPTIONS
-    -h  Help/manual
-    -c  CPU/threads/process limit
-    -d  Dry run
-    -q  Quiet prefixed task info for all job output
-    -v  Verbose runtime details
-    -vv Verbose plus dependency graph details
+  -h  Help/manual
+  -c  CPU/threads/process limit
+  -d  Dry run
+  -q  Quiet prefixed task info for all job output
+  -v  Verbose runtime details
+  -vv Verbose plus dependency graph details
 
-Task and Dependency Specification
+TASK AND DEPENDENCY SPECIFICATION:
 
-  One or more lines: taskId bashCommand
-  Last line: = dependencySexper
+  One or more lines: taskId bashExpression
+  Last line: = dependencyGraphSexper
 
-  The bash command must be on a single line.
+  The bash expression must be one line with no line breaks.  It may be
+  a compound expression IE with semicolons, pipes, etc.
 
   Example:
 
-task1 echo task1; sleep;
-task2 cargo run | cat -n
-= (* task1 (+ task2 task3))
+t1 echo hello world
+bbb git clone stuff; sleep && date
+zz_ cargo build | cat -n
+= (* t1 (+ bb zz_))
 
-Dependency Graph Syntax
+DEPENDENCY GRAPH SYNTAX:
 
-  A prefix expression (Scheme/Lisp expressions) where:
+  A LISP expression where:
+
     * runs tasks in parallel
     + runs tasks consecutively
 
   TaskIDs can be used more than once in the graph but will only run one.
 
-Example
+  EXAMPLE
 
-(* A (+ B (* C D) A E) F)
+    Given 6 tasks A through F:
+
+    (* A (+ B (* C D) A E) F)
 
   The following will run A and F in parallel along with the middle group
   (+ B (* C D) E A).  The middle group runs sequentally B followed by (* C D),
   where C and D run in parallel, and finally E with A already having run.
+
+COMMAND LINE EXAMPLES
+
+echo -e "a echo hello\nb echo world\n= (* a b)" | parallelize
+
+parallelize <<<'
+a echo hello
+b echo world
+= (* a b)
+'
+
+cat >spec <<HEREDOC
+a echo hello
+b echo world
+= (* a b)
+HEREDOC
+parallelize -c 8 -vv <spec
+
 BLOCK
 }
 
 function readTasksAndGraph () {
+    declare -A graphTasks
     local key value sexpr tokens
     while read -r key value
     do case $key in
@@ -113,6 +141,7 @@ function readTasksAndGraph () {
         esac done
     sexpr2tokens <<<$sexpr
     tokens2graph 0 <<<$tokens
+    (( ${#graphTasks[*]}-2 == ${#tasks[*]}))
 }
 
 function sexpr2tokens () {
@@ -126,16 +155,19 @@ function sexpr2tokens () {
 }
 
 function tokens2graph () {
-    local c token=$1
-    declare -n p=graph$token
-    ((token)) && p=()
-    while read -r c
+    local c graph=$1
+    declare -n p=graph$graph
+    ((graph)) && p=()
+    while read -r task
     do
-      case $c in
-        ('(') tokens2graph $(( p[${#p[*]}] = ++token )) ;;
+      case $task in
+        ('(')
+            tokens2graph $(( p[${#p[*]}] = ++graph )) ;;
         (')') return ;;
         ("") ;;
-        (*) p[${#p[*]}]=$c ;;
+        (*) graphTasks[$task]=1
+            p[${#p[*]}]=$task
+            ;;
       esac
     done
 }
