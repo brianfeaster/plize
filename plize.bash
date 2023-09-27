@@ -28,11 +28,7 @@ function parallelize () {
     declare -A tasks=()
     declare -A taskStates=()
     graph0=("*")
-    readTasksAndGraph || {
-        printf "$IRED[EXCEPTION dependency graph missing one or more tasks]$NORM"
-        prettyPrintEverything
-        exit 2
-    }
+    readTasksAndGraph || throwDependencyGraph
 
     ((debug)) && prettyPrintEverything
     #printGraph
@@ -72,41 +68,67 @@ OPTIONS
   -d  Dry run
   -q  Quiet prefixed task info for all job output
   -v  Verbose runtime details
-  -vv Verbose plus dependency graph details
+  -vv Verbose plus dependency tree details
 
-TASK AND DEPENDENCY SPECIFICATION:
+TASKS AND DEPENDENCYIES FILE:
 
-  One or more lines: taskId bashExpression
-  Last line: = dependencyGraphSexper
+  The specifcation file contains multiple lines of task definitions and
+  dependency definitions.  See below for details.
 
-  The bash expression must be one line with no line breaks.  It may be
+  Examples:
+
+task1 echo hello world
+task2 git clone stuff; sleep && date
+task3 cargo build | cat -n
+= (* task1 (+ task2 task3))
+
+aa echo hello
+bb echo world
+= (+ aa bb)
+cc echo done
+= (* aa cc)
+
+
+TASK DEFINITION SYNTAX:
+
+    taskId bash-expression
+
+  A task definition consists of a unique task ID followed by a bash expression.
+  The bash-expression must be one line with no line breaks.  It may be
   a compound expression IE with semicolons, pipes, etc.
 
-  Example:
+  The task IDs are used in the dependency tree definitions.
 
-t1 echo hello world
-bbb git clone stuff; sleep && date
-zz_ cargo build | cat -n
-= (* t1 (+ bb zz_))
 
-DEPENDENCY GRAPH SYNTAX:
+DEPENDENCY DEFINITION SYNTAX:
 
-  A LISP expression where:
+    = sexpr
 
-    * runs tasks in parallel
-    + runs tasks consecutively
+  A parenthesized prefix-style LISP expression (prefixed by a "=") containing
+  task Ids (specified via task definitions) and the following "operators":
 
-  TaskIDs can be used more than once in the graph but will only run one.
+    *  parallel scheduled operator
+    +  sequenced scheduled operator
 
-  EXAMPLE
+  Example (Assume 6 existing tasks labeled A through F):
 
-    Given 6 tasks A through F:
-
-    (* A (+ B (* C D) A E) F)
+    = (* A (+ B (* C D) A E) F)
 
   The following will run A and F in parallel along with the middle group
   (+ B (* C D) E A).  The middle group runs sequentally B followed by (* C D),
   where C and D run in parallel, and finally E with A already having run.
+
+  TaskIDs can be used more than once in the tree but will only run one.
+
+  Mutliple dependency definitions are considered parallel tasks. IE
+
+    = (+ a b)
+    = c
+
+  is equivalent to
+
+    = (* (+ a b) c)
+
 
 COMMAND LINE EXAMPLES
 
@@ -115,13 +137,15 @@ echo -e "a echo hello\nb echo world\n= (* a b)" | parallelize
 parallelize <<<'
 a echo hello
 b echo world
-= (* a b)
+= a
+= b
 '
 
 cat >spec <<HEREDOC
+= (+ c (* a b))
 a echo hello
 b echo world
-= (* a b)
+c echo ok
 HEREDOC
 parallelize -c 8 -vv <spec
 
@@ -130,11 +154,11 @@ BLOCK
 
 function readTasksAndGraph () {
     declare -A graphTasks
-    local key value sexpr tokens
+    local key value sexpr="" tokens
     while read -r key value
     do case $key in
         ("") ;;
-        (=) sexpr=$value ;;
+        (=) sexpr+=" $value" ;;
         (*) tasks[$key]=$value
             taskStates[$key]=ready
             ;;
@@ -327,4 +351,10 @@ function reportTaskCompleted () {
     echo -n "$IGREEN[Completed pid $pid:$taskId]$NORM $taskCmd "
     ((2 <= debug)) && prettyPrintGraph 0
     echo
+}
+
+function throwDependencyGraph () {
+    printf "$IRED[EXCEPTION dependency graph missing one or more tasks]$NORM"
+    prettyPrintEverything
+    exit 2
 }

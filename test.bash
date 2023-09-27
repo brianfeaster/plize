@@ -23,11 +23,13 @@ REM
 parallelize -c4 -vv <<BLOCK
 a sleep 0; echo a
 aa sleep 1; echo aa 1>&2
+= a 
+= (+ (* aa(+ b c2)d) e_)
+= a
 b sleep 1; echo b
 c2 sleep 1; echo c2; exit 0
 d sleep 1; echo d
 e_ sleep 1; echo _e
-= a (+ (* aa(+ b c2)d) e_) a
 BLOCK
 
 echo DONE.
