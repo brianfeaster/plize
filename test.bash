@@ -14,6 +14,19 @@ export -f fun2 fun3 fun4
 #fun & fun & fun & fun & fun &
 
 #parallelize fun4 3 fun3 1m "funx 5" 3 1m fun2 "funx 3" 'timeout 4 bash -c fun3'
-parallelize fun4 'fun3' "funx 5" fun2 ' funx 3 | cat -n'
 
+<<REM
+parallelize <<<'a echo hi
+= a'
+REM
+
+parallelize <<<'
+a sleep 1; echo a
+aa sleep 2; echo aa 1>&2
+b sleep 3; echo b
+c2 sleep 4; echo c2; exit 0
+d sleep 5; echo d
+e_ sleep 6; echo _e
+= a (+ (* aa(+ b c2)d) e_) a
+'
 echo DONE.
