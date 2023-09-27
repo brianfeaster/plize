@@ -20,7 +20,7 @@ parallelize <<<'a echo hi
 = a'
 REM
 
-parallelize <<<'
+parallelize -vv <<BLOCK
 a sleep 1; echo a
 aa sleep 2; echo aa 1>&2
 b sleep 3; echo b
@@ -28,5 +28,6 @@ c2 sleep 4; echo c2; exit 0
 d sleep 5; echo d
 e_ sleep 6; echo _e
 = a (+ (* aa(+ b c2)d) e_) a
-'
+BLOCK
+
 echo DONE.

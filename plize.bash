@@ -1,8 +1,10 @@
 #!/bin/bash
 
 function parallelize () {
+    local -
     set +e
-    local NORM=$'\e[0m'
+
+    local NORM=$'\e[m'
     local RED=$'\e[0;31m'
     local GREEN=$'\e[0;32m'
     local YELLOW=$'\e[0;33m'
@@ -14,19 +16,75 @@ function parallelize () {
     local IMAGENTA=$'\e[1;35m'
     local WHITE=$'\e[1;37m'
 
+    local quiet=0
+    local debug=0
+    parseCommandArgs $*
+
     declare -A tasks=()
     declare -A taskStates=()
     graph0=("*")
     readTasksAndGraph
 
-    local cpuMax=2
+    ((debug)) && prettyPrintEverything
+    #printGraph
+
+    local cpuMax=3
     scheduler
 
-    prettyPrintEverything
-    #for n in ${!graph*}; do eval def $n; done
+    ((debug)) && prettyPrintEverything
 }
 
 ########################################
+
+function parseCommandArgs () {
+    [[ $* =~ -h ]] && { help; exit 0; }
+    [[ $* =~ -q ]] && quiet=1
+    [[ $* =~ -v ]] && debug=1
+    [[ $* =~ -vv ]] && debug=2
+}
+
+function help () {
+    cat <<BLOCK
+
+NAME
+    Parallelize
+
+USAGE
+    parallelize [-q] [-v | -vv]
+
+    Reads Tasks and Dependency Specification (see below) via STDIN
+
+OPTIONS
+    -q  Quiet prefixed task info for all job output
+    -v  Verbose runtime details
+    -vv Verbose runtime deatils including dependency graph
+
+Task and Dependency Specification
+
+  One or more lines: taskId bashCommand
+  Last line: = dependencySexper
+
+  Example:
+
+task1 echo task1; sleep;
+task2 cargo run | cat -n
+= (* task1 (+ task2 task3))
+
+Dependency Graph Syntax
+
+ A prefix expression (Scheme/Lisp expressions) where:
+   * runs tasks in parallel
+   + runs tasks consecutively
+
+Example
+
+ (* A (+ B (* C D) E) F)
+
+ The following will run A and F in parallel along with the middle group
+ (+ B (* C D) E).  The middle group runs sequentally B followed by (* C D),
+ where C and D run in parallel, and finally E.
+BLOCK
+}
 
 function readTasksAndGraph () {
     local key value sexpr tokens
@@ -34,34 +92,31 @@ function readTasksAndGraph () {
     do case $key in
         ("") ;;
         (=) sexpr=$value ;;
-        (*) 
-            tasks[$key]=$value
-            taskStates[$key]=ready ;;
-    esac done
-    sexpr2tokens
+        (*) tasks[$key]=$value
+            taskStates[$key]=ready
+            ;;
+        esac done
+    sexpr2tokens <<<$sexpr
     tokens2graph 0 <<<$tokens
 }
 
 function sexpr2tokens () {
-    local IFS=
+    local c IFS=
     while read -r -n 1 c
-    do
-        case $c in
-            ("("|")") tokens+=$'\n'$c$'\n' ;;
-            (" "|$'\t') tokens+=$'\n';;
-            (*) tokens+=$c ;;
-        esac
-    done <<<$sexpr
+    do case $c in
+        ("("|")") tokens+=$'\n'$c$'\n' ;;
+        (" "|$'\t') tokens+=$'\n';;
+        (*) tokens+=$c ;;
+    esac done
 }
 
 function tokens2graph () {
-    declare -n p=graph$1
+    local c token=$1
+    declare -n p=graph$token
     while read -r c
     do
       case $c in
-        ('(')
-            (( p[${#p[*]}] = $1 + 1 ))
-            tokens2graph $(($1+1));;
+        ('(') tokens2graph $(( p[${#p[*]}] = ++token )) ;;
         (')') return ;;
         ("") ;;
         (*) p[${#p[*]}]=$c ;;
@@ -87,40 +142,44 @@ function scheduler () {
 }
 
 function spawnNextFree () {
-    local taskCmd
-    if [ "${1//[0-9]}" == "" ]
+    local taskId=$1
+    if [ "${taskId//[0-9]}" == "" ]
     then
-        declare -n p=graph$1
-        local taskId
-
+        declare -n p=graph$taskId
+        local allFinished=1
         case $p in
-            ("*")
-                for taskId in ${p[@]:1}
-                do
-                  spawnNextFree "$taskId" && return $?
-                done
-                ;;
-            ("+")
-                for taskId in ${p[@]:1}
-                do
-                    spawnNextFree "$taskId"
-                    case $? in
-                        (0|1|3) return $? ;;
-                        (2) ;;
-                    esac
-                done
-                ;;
-            (*) printf "[${IRED}FATAL EXCEPTION:  Unknown graph dependency '$p']"; exit 254 ;;
+        ("*")
+            for taskId in ${p[@]:1}
+            do
+              spawnNextFree $taskId
+                case $? in
+                    (0) return 0 ;;
+                    (2) ;;
+                    (*) allFinished=0 ;;
+                esac
+            done
+            return $((allFinished ? 2 : 1))
+            ;;
+        ("+")
+            for taskId in ${p[@]:1}
+            do
+                spawnNextFree $taskId
+                case $? in
+                    (2) ;;
+                    (*) return $? ;;
+                esac
+            done
+            return 2
+            ;;
+        (*)
+            printf "$IRED[EXCEPTION unknown graph dependency '$p'] $NORM"
+            prettyPrintGraph 0
+            exit 3 ;;
         esac
 
     else
-        case ${taskStates[$1]} in
-            (ready)
-                taskStates[$1]=running
-                taskCmd="${tasks[$1]}"
-                spawnTask
-                return 0
-                ;;
+        case ${taskStates[$taskId]} in
+            (ready) spawnTask; return 0 ;;
             (running) return 1 ;;
             (finished) return 2 ;;
             (failed|*) return 3 ;;
@@ -129,20 +188,28 @@ function spawnNextFree () {
 }
 
 function spawnTask () {
-    ( eval  "echo $BASHPID; echo $BASHPID 1>&2; $taskCmd" )\
-      2> >(read -r pid; while read -r l; do echo "$RED[$pid]$NORM $l"; done) \
-      1> >(read -r pid; while read -r l; do echo "$GREEN[$pid]$NORM $l"; done) \
-      &
+    local taskCmd="${tasks[$taskId]}"
+    if ((quiet))
+    then
+        eval "$taskCmd" &
+    else
+        ( eval "echo $BASHPID; echo $BASHPID 1>&2; $taskCmd" )\
+          2> >(read -r pid; while read -r l; do echo "$RED[$pid:$taskId]$NORM $l"; done) \
+          1> >(read -r pid; while read -r l; do echo "$GREEN[$pid:$taskId]$NORM $l"; done) \
+        &
+    fi
     pid2task[$!]=$taskId
-    echo "$IMAGENTA[Spawned $!:$taskId]$NORM $taskCmd"
+    taskStates[$taskId]=running
+    ((debug)) && echo "$IMAGENTA[Spawned $!:$taskId]$NORM $taskCmd"
     return 0
 }
 
 function waitForATask () {
-    (( !${#pid2task[@]} )) && return 255
+    ((${#pid2task[@]})) || return 255
 
-    echo -n "$IMAGENTA[Waiting on ${#pid2task[@]} tasks]$NORM ${!pid2task[@]} "
-    prettyPrintGraph 0; echo
+    ((debug)) && echo -n "$IMAGENTA[Waiting on ${#pid2task[@]} tasks]$NORM ${!pid2task[@]} "
+    ((2 <= debug)) && prettyPrintGraph 0
+    ((debug)) && echo
 
     wait -p pid -n ${!pid2task[@]}
 
@@ -158,7 +225,8 @@ function waitForATask () {
         return $ret
     else
         taskStates[$taskId]=finished
-        reportTaskCompleted
+        ((debug)) && reportTaskCompleted
+        return 0
     fi
 }
 
@@ -172,7 +240,7 @@ function prettyPrintEverything () {
     done
     echo -e "${WHITE}GRAPH$NORM"
     printf " "
-    prettyPrintGraph 0
+    ((2<=debug)) && prettyPrintGraph 0
     echo
 }
 
@@ -195,9 +263,16 @@ function prettyPrintGraph () {
             (running) printf "$IGREEN$1$NORM" ;;
             (finished) printf "$IBLUE$1$NORM" ;;
             (failed) printf "$IRED$1$NORM" ;;
-            (*)       printf "$1" ;;
+            (*) printf "$1" ;;
         esac
     fi
+}
+
+function printGraph () {
+    for n in ${!graph*}
+    do
+        declare -p $n
+    done
 }
 
 function reportTaskFail () {
@@ -205,5 +280,7 @@ function reportTaskFail () {
 }
 
 function reportTaskCompleted () {
-    echo "$IGREEN[Completed pid $pid:$taskId]$NORM $taskCmd"
+    echo -n "$IGREEN[Completed pid $pid:$taskId]$NORM $taskCmd "
+    ((2 <= debug)) && prettyPrintGraph 0
+    echo
 }
