@@ -20,7 +20,7 @@ parallelize <<<'a echo hi
 = a'
 REM
 
-parallelize -c4 -vv <<BLOCK
+parallelize -c4 -vv <<.
 a sleep 0; echo a
 aa sleep 1; echo aa 1>&2
 = a 
@@ -30,6 +30,6 @@ b sleep 1; echo b
 c2 sleep 1; echo c2; exit 0
 d sleep 1; echo d
 e_ sleep 1; echo _e
-BLOCK
+.
 
 echo DONE.

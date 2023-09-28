@@ -2,7 +2,7 @@
 
 function parallelize () {
     local -
-    set +e +m
+    set +e +m -f
 
     local NORM=$'\e[m'
     local RED=$'\e[0;31m'
@@ -27,7 +27,7 @@ function parallelize () {
 
     declare -A tasks=()
     declare -A taskStates=()
-    graph0=("*")
+    local dependencytree=("* ")
     readTasksAndGraph || throwDependencyGraph
 
     ((debug)) && prettyPrintEverything
@@ -38,6 +38,7 @@ function parallelize () {
         scheduler
         ((debug)) && prettyPrintEverything
     fi
+    return 0
 }
 
 ########################################
@@ -179,18 +180,18 @@ function sexpr2tokens () {
 }
 
 function tokens2graph () {
-    local c graph=$1
-    declare -n p=graph$graph
-    ((graph)) && p=()
+    local task depth=$1
     while read -r task
     do
       case $task in
         ('(')
-            tokens2graph $(( p[${#p[*]}] = ++graph )) ;;
+            dependencytree[depth]+="$((1+depth)) "
+            tokens2graph $((depth+1))
+            ;;
         (')') return ;;
         ("") ;;
         (*) graphTasks[$task]=1
-            p[${#p[*]}]=$task
+            dependencytree[depth]+="$task "
             ;;
       esac
     done
@@ -199,26 +200,21 @@ function tokens2graph () {
 ########################################
 
 function scheduler () {
-    declare -A pid2task=()
-
+    local pid2task=()
     while ((${#pid2task[*]} < cpus)) && spawnNextFree 0; do :; done
-
     while waitForATask
     do
         spawnNextFree 0
     done
-
 }
 
 function spawnNextFree () {
-    local taskId=$1
-    if [ "${taskId//[0-9]}" == "" ]
+    if [ "${1//[0-9]}" == "" ]
     then
-        declare -n p=graph$taskId
-        local allFinished=1
-        case $p in
+        local depth=$1 taskId allFinished=1
+        case ${dependencytree[depth]%% *} in
         ("*")
-            for taskId in ${p[@]:1}
+            for taskId in ${dependencytree[depth]#* }
             do
               spawnNextFree $taskId
                 case $? in
@@ -230,7 +226,7 @@ function spawnNextFree () {
             return $((allFinished ? 2 : 1))
             ;;
         ("+")
-            for taskId in ${p[@]:1}
+            for taskId in ${dependencytree[depth]#* }
             do
                 spawnNextFree $taskId
                 case $? in
@@ -241,12 +237,13 @@ function spawnNextFree () {
             return 2
             ;;
         (*)
-            printf "$IRED[EXCEPTION unknown graph dependency '$p'] $NORM"
-            prettyPrintGraph 0
+            printf "$IRED[EXCEPTION unknown dependency op '$p'] $NORM"
+            prettyPrintGraph
             exit 3 ;;
         esac
 
     else
+        local taskId=$1
         case ${taskStates[$taskId]} in
             (ready) spawnTask; return 0 ;;
             (running) return 1 ;;
@@ -274,11 +271,13 @@ function spawnTask () {
 }
 
 function waitForATask () {
+    local pid ret taskId taskCmd
     ((${#pid2task[@]})) || return 255
 
-    ((debug)) && echo -n "$IMAGENTA[Waiting on ${#pid2task[@]} tasks]$NORM ${!pid2task[@]} "
-    ((2 <= debug)) && prettyPrintGraph 0
-    ((debug)) && echo
+    ((debug)) && echo $(
+        echo -n "$IMAGENTA[Waiting on ${#pid2task[@]} tasks]$NORM ${!pid2task[@]} "
+        ((2 <= debug)) && prettyPrintGraph
+    )
 
     wait -p pid -n ${!pid2task[@]}
 
@@ -302,27 +301,29 @@ function waitForATask () {
 ########################################
 
 function prettyPrintEverything () {
-    echo -e "\n${WHITE}--TASKS--------$NORM"
+    echo -e "${WHITE}--TASKS--------$NORM"
     for k in $(sort <(tr \  \\n <<<${!tasks[@]}))
     do
         echo " $GREEN$k $YELLOW${taskStates[$k]} $NORM${tasks[$k]}"
     done
     echo -ne "${WHITE}GRAPH$NORM\n "
-    prettyPrintGraph 0
-    echo
+    prettyPrintGraph
 }
 
 function prettyPrintGraph () {
+    local buff=$(_prettyPrintGraph 0)
+    echo $buff
+}
+
+function _prettyPrintGraph () {
     if [ "${1//[0-9]}" == "" ]
     then
-        declare -n p=graph$1
-        local a
-        printf "("
-        prettyPrintGraph "$p"
-        for a in ${p[@]:1}
+        local a w="("
+        for a in ${dependencytree[$1]}
         do
-            printf " "
-            prettyPrintGraph "$a"
+            printf "$w"
+            _prettyPrintGraph $a
+            w=" "
         done
         printf ")"
     else
@@ -337,9 +338,9 @@ function prettyPrintGraph () {
 }
 
 function printGraph () {
-    for n in ${!graph*}
+    for i in "${!dependencytree[@]}"
     do
-        declare -p $n
+        echo dependencytree[$i]=\"${dependencytree[i]}\"
     done
 }
 
@@ -348,13 +349,14 @@ function reportTaskFail () {
 }
 
 function reportTaskCompleted () {
-    echo -n "$IGREEN[Completed pid $pid:$taskId]$NORM $taskCmd "
-    ((2 <= debug)) && prettyPrintGraph 0
-    echo
+    echo $(
+      echo -n "$IGREEN[Completed $pid:$taskId]$NORM $taskCmd "
+      ((2 <= debug)) && prettyPrintGraph
+    )
 }
 
 function throwDependencyGraph () {
-    printf "$IRED[EXCEPTION dependency graph missing one or more tasks]$NORM"
+    printf "$IRED[EXCEPTION dependency tree missing one or more tasks]$NORM"
     prettyPrintEverything
     exit 2
 }
