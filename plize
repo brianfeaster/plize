@@ -1,6 +1,6 @@
 #!/bin/bash
 
-function parallelize () {
+function main () {
     local -
     set +e +m -f
 
@@ -20,61 +20,66 @@ function parallelize () {
     local dryrun=0
     local quiet=0
     local debug=0
-    local cpus=3
+    declare -i cpus=3
+    local specfile=""
     parseCommandArgs "$*"
 
-    ((help)) && { help; return; }
+    ((help)) && help && return
+    [ "$specfile" ] && { [ -e "$specfile" ] && exec <$specfile || throwInvalidFile; }
 
     declare -A tasks=()
     declare -A taskStates=()
     local dependencytree=("* ")
-    readTasksAndGraph || throwDependencyGraph
+    readTasksAndGraph
 
     ((debug)) && prettyPrintEverything
-    #printGraph
-
-    if ((!dryrun))
-    then
-        scheduler
-        ((debug)) && prettyPrintEverything
-    fi
-    return 0
+    ((dryrun)) && return || scheduler
 }
 
 ########################################
 
 function parseCommandArgs () {
-    [[ $* =~ -h ]] && help=1
-    [[ $* =~ -d ]] && dryrun=1
-    [[ $* =~ -q ]] && quiet=1
-    [[ $* =~ -v ]] && debug=1
-    [[ $* =~ -vv ]] && debug=2
-    [[ $* =~ -c\ *([0-9]+) ]] && cpus=BASH_REMATCH[1]
+    local a
+    while read a
+    do case $a in
+      (-h) help=1 ;;
+      (-d) dryrun=1 ;;
+      (-q) quiet=1 ;;
+      (-v) debug=1 ;;
+      (-vv) debug=2 ;;
+      (-c) read cpus ;;
+      (*) [ a[0] != - ] && specfile=$a ;;
+    esac done < <(tr " " "\n" <<<$*)
 }
 
 function help () {
     cat <<BLOCK
 
 NAME
-  Parallelize
+  Parallelize - Dependency defined bash scheduler
 
 USAGE
-  parallelize [-h] [-c CPUs] [-d] [-q] [-v | -vv]
+  plize [-h] [-c CPUs] [-d] [-q] [-v | -vv] [file]
 
-  Reads Tasks and Dependency Specification (see below) via STDIN
+  Reads Tasks and Dependency Specification via STDIN if no [file] specified.
+
+  Returns 0 if all tasks succeed or the error number of the failing task.
+  The scheduler stops if any task fails but will not stop any already
+  running tasks.
 
 OPTIONS
-  -h  Help/manual
-  -c  CPU/threads/process limit
-  -d  Dry run
-  -q  Quiet prefixed task info for all job output
-  -v  Verbose runtime details
-  -vv Verbose plus dependency tree details
+  -h   Help/manual
+  -c   CPU/threads/process limit
+  -d   Dry run
+  -q   Quiet prefixed task info for all job output
+  -v   Verbose runtime details
+  -vv  Verbose plus dependency tree details
+  file specification file
 
-TASKS AND DEPENDENCYIES FILE:
+TASKS AND DEPENDENCIES FILE:
 
-  The specifcation file contains multiple lines of task definitions and
-  dependency definitions.  See below for details.
+  The specifcation file contains multiple lines of "task definitions" and
+  "dependency definitions."
 
   Examples:
 
@@ -100,6 +105,9 @@ TASK DEFINITION SYNTAX:
 
   The task IDs are used in the dependency tree definitions.
 
+  Example:
+
+    task1 sleep 1; echo hello world | xxd
 
 DEPENDENCY DEFINITION SYNTAX:
 
@@ -115,7 +123,7 @@ DEPENDENCY DEFINITION SYNTAX:
 
     = (* A (+ B (* C D) A E) F)
 
-  The following will run A and F in parallel along with the middle group
+  The above will run A and F in parallel along with the middle group
   (+ B (* C D) E A).  The middle group runs sequentally B followed by (* C D),
   where C and D run in parallel, and finally E with A already having run.
 
@@ -133,9 +141,9 @@ DEPENDENCY DEFINITION SYNTAX:
 
 COMMAND LINE EXAMPLES
 
-echo -e "a echo hello\nb echo world\n= (* a b)" | parallelize
+echo -e "a echo hello\nb echo world\n= (* a b)" | plize
 
-parallelize <<<'
+./plize <<<'
 a echo hello
 b echo world
 = a
@@ -148,7 +156,7 @@ a echo hello
 b echo world
 c echo ok
 HEREDOC
-parallelize -c 8 -vv <spec
+./plize -c 8 -vv spec
 
 BLOCK
 }
@@ -160,13 +168,15 @@ function readTasksAndGraph () {
     do case $key in
         ("") ;;
         (=) sexpr+=" $value" ;;
+        ("*"|"+") throwInvalidTaskId ;;
         (*) tasks[$key]=$value
             taskStates[$key]=ready
             ;;
         esac done
     sexpr2tokens <<<$sexpr
     tokens2graph 0 <<<$tokens
-    (( ${#graphTasks[*]}-2 == ${#tasks[*]}))
+    unset graphTasks[+] graphTasks['"*"']
+    (( ${#graphTasks[*]} == ${#tasks[*]})) || throwDependencyGraph
 }
 
 function sexpr2tokens () {
@@ -190,7 +200,7 @@ function tokens2graph () {
             ;;
         (')') return ;;
         ("") ;;
-        (*) graphTasks[$task]=1
+        (*) graphTasks[$task]=
             dependencytree[depth]+="$task "
             ;;
       esac
@@ -200,12 +210,14 @@ function tokens2graph () {
 ########################################
 
 function scheduler () {
-    local pid2task=()
+    local pid2task=() errnum=0
     while ((${#pid2task[*]} < cpus)) && spawnNextFree 0; do :; done
     while waitForATask
     do
         spawnNextFree 0
     done
+    ((debug)) && prettyPrintEverything
+    return $errnum
 }
 
 function spawnNextFree () {
@@ -239,7 +251,7 @@ function spawnNextFree () {
         (*)
             printf "$IRED[EXCEPTION unknown dependency op '$p'] $NORM"
             prettyPrintGraph
-            exit 3 ;;
+            exit 4 ;;
         esac
 
     else
@@ -259,11 +271,12 @@ function spawnTask () {
     then
         eval "$taskCmd" &
     else
-        ( eval "echo $BASHPID; echo $BASHPID 1>&2; $taskCmd" )\
-          2> >(read -r pid; while read -r l; do echo "$RED[$pid:$taskId]$NORM $l"; done) \
-          1> >(read -r pid; while read -r l; do echo "$GREEN[$pid:$taskId]$NORM $l"; done) \
-        &
+        eval "{ $taskCmd ; } \
+        2> >(while read -r l; do echo   \"$RED[$BASHPID:$taskId]$NORM \$l\"; done) \
+        1> >(while read -r l; do echo \"$GREEN[$BASHPID:$taskId]$NORM \$l\"; done)" \
+        &  
     fi
+
     pid2task[$!]=$taskId
     taskStates[$taskId]=running
     ((debug)) && echo "$IMAGENTA[Spawned $!:$taskId]$NORM $taskCmd"
@@ -271,7 +284,7 @@ function spawnTask () {
 }
 
 function waitForATask () {
-    local pid ret taskId taskCmd
+    local pid taskId taskCmd
     ((${#pid2task[@]})) || return 255
 
     ((debug)) && echo $(
@@ -281,16 +294,16 @@ function waitForATask () {
 
     wait -p pid -n ${!pid2task[@]}
 
-    ret=$?
+    errnum=$?
     taskId=${pid2task[$pid]}
     taskCmd=${tasks[$taskId]}
-
     unset pid2task[$pid]
-    if ((ret))
+
+    if ((errnum))
     then
         taskStates[$taskId]=failed
         reportTaskFail
-        return $ret
+        return $errnum
     else
         taskStates[$taskId]=finished
         ((debug)) && reportTaskCompleted
@@ -306,7 +319,7 @@ function prettyPrintEverything () {
     do
         echo " $GREEN$k $YELLOW${taskStates[$k]} $NORM${tasks[$k]}"
     done
-    echo -ne "${WHITE}GRAPH$NORM\n "
+    echo -ne "${WHITE}TREE$NORM\n "
     prettyPrintGraph
 }
 
@@ -345,7 +358,7 @@ function printGraph () {
 }
 
 function reportTaskFail () {
-    echo "$IRED[Exception pid $pid:$taskId returned $ret]$NORM $taskCmd"
+    echo "$IRED[Exception pid $pid:$taskId returned $errnum]$NORM $taskCmd"
 }
 
 function reportTaskCompleted () {
@@ -355,8 +368,22 @@ function reportTaskCompleted () {
     )
 }
 
-function throwDependencyGraph () {
-    printf "$IRED[EXCEPTION dependency tree missing one or more tasks]$NORM"
-    prettyPrintEverything
+########################################
+
+function throwInvalidFile () {
+    echo "$IRED[Exception invalid file: $specfile]$NORM"
     exit 2
 }
+
+function throwInvalidTaskId () {
+    printf "$IRED[EXCEPTION task definition invlaid key]$NORM $key $value\n"
+    exit 3
+}
+
+function throwDependencyGraph () {
+    echo "$IRED[EXCEPTION dependency tree missing one or more tasks]$NORM"
+    prettyPrintEverything
+    exit 4
+}
+
+main "$@"

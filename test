@@ -1,5 +1,4 @@
 #!/bin/bash
-. plize.bash
 set -e
 
 fun2 () { sleep 2; printf "fun2\ndone\n";      sleep 0; return 0; }
@@ -13,23 +12,23 @@ export -f fun2 fun3 fun4
 #fun () { sleep 10; echo slow; exit 4; }
 #fun & fun & fun & fun & fun &
 
-#parallelize fun4 3 fun3 1m "funx 5" 3 1m fun2 "funx 3" 'timeout 4 bash -c fun3'
-
 <<REM
-parallelize <<<'a echo hi
-= a'
+./plize -c 3 -vv spec <<.
+a sleep 1
+b sleep 1
+c sleep 1
+= (+ a b c)
+.
 REM
 
-parallelize -c4 -vv <<.
+./plize -c 8 -vv <<.
 a sleep 0; echo a
-aa sleep 1; echo aa 1>&2
-= a 
-= (+ (* aa(+ b c2)d) e_)
-= a
+aa sleep 1; echo aa 1>&2 ; echo aa 1>&2
 b sleep 1; echo b
-c2 sleep 1; echo c2; exit 0
+c2 sleep 1; echo c2; echo c2
 d sleep 1; echo d
 e_ sleep 1; echo _e
+= a (+ (* aa(+ b c2)d) e_) a
 .
 
-echo DONE.
+echo TESTDONE.
