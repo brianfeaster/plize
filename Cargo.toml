@@ -1,0 +1,7 @@
+[package]
+name = "plize"
+version = "0.0.1"
+authors = ["brianfeaster"]
+edition = "2021"
+
+[dependencies]
