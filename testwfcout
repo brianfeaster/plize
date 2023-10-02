@@ -1,0 +1,14 @@
+#!/bin/bash
+
+echo -en '
+wget  wget https://github.com/brianfeaster/wavefunctioncollapse/archive/refs/heads/main.zip
+zip   unzip -o main.zip
+rm    rm -v main.zip; echo deleted main.zip
+mv    mv -v wavefunctioncollapse-main wfc
+run   cd wfc; cargo build --release; cargo run --release & sleep 6 ; kill %1
+del   rm -rf wfc; echo del wfc recursive
+ls    ls -oF
+= (+ wget zip mv ls (* rm run) del)
+' | ./plize -o out.sh
+
+./out.sh

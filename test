@@ -13,7 +13,7 @@ export -f fun2 fun3 fun4
 #fun & fun & fun & fun & fun &
 
 <<REM
-./plize -c 3 -vv spec <<.
+./plize -c 3 -vv <<.
 a sleep 1
 b sleep 1
 c sleep 1

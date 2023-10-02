@@ -22,6 +22,7 @@ function main () {
     local debug=0
     declare -i cpus=3
     local specfile=""
+    local outputscript=""
     parseCommandArgs "$*"
 
     ((help)) && help && return
@@ -33,7 +34,24 @@ function main () {
     readTasksAndGraph
 
     ((debug)) && prettyPrintEverything
-    ((dryrun)) && return || scheduler
+    ((dryrun)) && return || {
+        if [ "$outputscript" ]
+        then
+            {
+            printf '#!/bin/bash\n'
+            printf 'function main () {\nlocal -\n'
+            printf 'set +e +m -f\n'
+            declare -p NORM RED GREEN YELLOW CYAN IRED IGREEN IBLUE ICYAN IMAGENTA WHITE quiet debug cpus tasks taskStates dependencytree
+            printf 'scheduler\n}\n'
+            declare -f scheduler spawnNextFree spawnTask waitForATask prettyPrintEverything prettyPrintGraph _prettyPrintGraph reportTaskFail reportTaskCompleted
+            echo main
+            } > $outputscript
+            chmod u+x $outputscript
+            echo "Wrote: $outputscript"
+        else
+          scheduler
+        fi
+    }
 }
 
 ########################################
@@ -48,6 +66,7 @@ function parseCommandArgs () {
       (-v) debug=1 ;;
       (-vv) debug=2 ;;
       (-c) read cpus ;;
+      (-o) read outputscript ;;
       (*) [ a[0] != - ] && specfile=$a ;;
     esac done < <(tr " " "\n" <<<$*)
 }
@@ -59,7 +78,7 @@ NAME
   Parallelize - Dependency defined bash scheduler
 
 USAGE
-  plize [-h] [-c CPUs] [-d] [-q] [-v | -vv] [file]
+  plize [-h] [-c CPUs] [-d] [-q] [-v | -vv] [-o ofile] [file]
 
   Reads Tasks and Dependency Specification via STDIN if no [file] specified.
 
@@ -68,13 +87,14 @@ USAGE
   running tasks.
 
 OPTIONS
-  -h   Help/manual
-  -c   CPU/threads/process limit
-  -d   Dry run
-  -q   Quiet prefixed task info for all job output
-  -v   Verbose runtime details
-  -vv  Verbose plus dependency tree details
-  file specification file
+  -h       Help/manual
+  -c       CPU/threads/process limit
+  -d       Dry run
+  -q       Quiet prefixed task info for all job output
+  -v       Verbose runtime details
+  -vv      Verbose plus dependency tree details
+  -o ofile Write a standalone runable script to ofile
+  file     specification file
 
 TASKS AND DEPENDENCIES FILE:
 
@@ -214,7 +234,7 @@ function scheduler () {
     while ((${#pid2task[*]} < cpus)) && spawnNextFree 0; do :; done
     while waitForATask
     do
-        spawnNextFree 0
+        while ((${#pid2task[*]} < cpus)) && spawnNextFree 0; do :; done
     done
     ((debug)) && prettyPrintEverything
     return $errnum
@@ -274,7 +294,7 @@ function spawnTask () {
         eval "{ $taskCmd ; } \
         2> >(while read -r l; do echo   \"$RED[$BASHPID:$taskId]$NORM \$l\"; done) \
         1> >(while read -r l; do echo \"$GREEN[$BASHPID:$taskId]$NORM \$l\"; done)" \
-        &  
+        &
     fi
 
     pid2task[$!]=$taskId
