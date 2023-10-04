@@ -30,6 +30,7 @@ function main () {
 
     declare -A tasks=()
     declare -A taskStates=()
+    declare -A taskStart=()
     local dependencytree=("* ")
     readTasksAndGraph
 
@@ -41,7 +42,7 @@ function main () {
             printf '#!/bin/bash\n'
             printf 'function main () {\nlocal -\n'
             printf 'set +e +m -f\n'
-            declare -p NORM RED GREEN YELLOW CYAN IRED IGREEN IBLUE ICYAN IMAGENTA WHITE quiet debug cpus tasks taskStates dependencytree
+            declare -p NORM RED GREEN YELLOW CYAN IRED IGREEN IBLUE ICYAN IMAGENTA WHITE quiet debug cpus tasks taskStates taskStart dependencytree
             printf 'scheduler\n}\n'
             declare -f scheduler spawnNextFree spawnTask waitForATask prettyPrintEverything prettyPrintGraph _prettyPrintGraph reportTaskFail reportTaskCompleted
             echo main
@@ -191,6 +192,7 @@ function readTasksAndGraph () {
         ("*"|"+") throwInvalidTaskId ;;
         (*) tasks[$key]=$value
             taskStates[$key]=ready
+            taskStart[$key]=0
             ;;
         esac done
     sexpr2tokens <<<$sexpr
@@ -299,12 +301,13 @@ function spawnTask () {
 
     pid2task[$!]=$taskId
     taskStates[$taskId]=running
+    taskStart[$taskId]=$SECONDS
     ((debug)) && echo "$IMAGENTA[Spawned $!:$taskId]$NORM $taskCmd"
     return 0
 }
 
 function waitForATask () {
-    local pid taskId taskCmd
+    local pid taskId taskCmd start runtime
     ((${#pid2task[@]})) || return 255
 
     ((debug)) && echo $(
@@ -318,6 +321,8 @@ function waitForATask () {
     taskId=${pid2task[$pid]}
     taskCmd=${tasks[$taskId]}
     unset pid2task[$pid]
+    start=${taskStart[$taskId]}
+    runtime=$((SECONDS-start))
 
     if ((errnum))
     then
@@ -378,12 +383,14 @@ function printGraph () {
 }
 
 function reportTaskFail () {
-    echo "$IRED[Exception pid $pid:$taskId returned $errnum]$NORM $taskCmd"
+    local s=s
+    echo "$IRED[Exception pid $pid:$taskId returned $errnum ${runtime} sec${s:0:runtime!=1}]$NORM $taskCmd"
 }
 
 function reportTaskCompleted () {
+    local s=s
     echo $(
-      echo -n "$IGREEN[Completed $pid:$taskId]$NORM $taskCmd "
+      echo -n "$IGREEN[Completed $pid:$taskId ${runtime} sec${s:0:runtime!=1})]$NORM $taskCmd "
       ((2 <= debug)) && prettyPrintGraph
     )
 }
