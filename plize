@@ -230,8 +230,7 @@ function tokens2graph () {
 function createScript () {
     {
       printf '#!/bin/bash\n'
-      printf 'function main () {\nlocal -\n'
-      printf 'set +e +m -f\n'
+      printf 'function main () {\nlocal -\nset +e +m -f\n'
       declare -p NORM RED GREEN YELLOW CYAN IRED IGREEN IBLUE ICYAN IMAGENTA WHITE quiet debug cpus logfile tasks taskStates taskStart dependencytree
       printf 'scheduler\n}\n'
       declare -f scheduler spawnNextFree spawnTask waitForATask prettyPrintEverything _prettyPrintEverything prettyPrintGraph _prettyPrintGraph reportTaskFail reportSpawned reportWaitingOnPid reportTaskCompleted throwUnknownDependency 
@@ -387,16 +386,10 @@ function _prettyPrintGraph () {
     fi
 }
 
-function printGraph () {
-    for i in "${!dependencytree[@]}"
-    do
-        echo dependencytree[$i]=\"${dependencytree[i]}\"
-    done
-}
-
 function reportTaskFail () {
     local s=s
-    echo "$IRED[Exception pid $pid:$taskId returned $errnum ${runtime} sec${s:0:runtime!=1}]$NORM $taskCmd"
+    let b="$IRED[Exception pid $pid:$taskId returned $errnum ${runtime} sec${s:0:runtime!=1}]$NORM $taskCmd"
+    [ "$logfile" ] && echo "$b" >>$logfile || echo "$b"
 }
 
 function reportSpawned () {
