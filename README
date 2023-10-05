@@ -1,0 +1,106 @@
+
+NAME
+  Parallelize - Dependency defined bash scheduler
+
+USAGE
+  plize [-h] [-c CPUs] [-d] [-q] [-v | -vv] [-l log] [-o ofile] [file]
+
+  Reads Tasks and Dependency Specification via STDIN if no [file] specified.
+
+  Returns 0 if all tasks succeed or the error number of the failing task.
+  The scheduler stops if any task fails but will not stop any already
+  running tasks.
+
+OPTIONS
+  -h       Help/manual
+  -c       CPU/threads/process limit
+  -d       Dry run
+  -q       Quiet prefixed task info for all job output
+  -v       Verbose runtime details
+  -vv      Verbose plus dependency tree details
+  -l       Logfile verbose messages are appended
+  -o ofile Write a standalone runable script to ofile
+  file     specification file
+
+TASKS AND DEPENDENCIES FILE:
+
+  The specifcation file contains multiple lines of "task definitions" and
+  "dependency definitions."
+
+  Examples:
+
+task1 echo hello world
+task2 git clone stuff; sleep && date
+task3 cargo build | cat -n
+= (* task1 (+ task2 task3))
+
+aa echo hello
+bb echo world
+= (+ aa bb)
+cc echo done
+= (* aa cc)
+
+
+TASK DEFINITION SYNTAX:
+
+    taskId bash-expression
+
+  A task definition consists of a unique task ID followed by a bash expression.
+  The bash-expression must be one line with no line breaks.  It may be
+  a compound expression IE with semicolons, pipes, etc.
+
+  The task IDs are used in the dependency tree definitions.
+
+  Example:
+
+    task1 sleep 1; echo hello world | xxd
+
+DEPENDENCY DEFINITION SYNTAX:
+
+    = sexpr
+
+  A parenthesized prefix-style LISP expression (prefixed by a "=") containing
+  task Ids (specified via task definitions) and the following "operators":
+
+    *  parallel scheduled operator
+    +  sequenced scheduled operator
+
+  Example (Assume 6 existing tasks labeled A through F):
+
+    = (* A (+ B (* C D) A E) F)
+
+  The above will run A and F in parallel along with the middle group
+  (+ B (* C D) E A).  The middle group runs sequentally B followed by (* C D),
+  where C and D run in parallel, and finally E with A already having run.
+
+  TaskIDs can be used more than once in the tree but will only run one.
+
+  Mutliple dependency definitions are considered parallel tasks. IE
+
+    = (+ a b)
+    = c
+
+  is equivalent to
+
+    = (* (+ a b) c)
+
+
+COMMAND LINE EXAMPLES
+
+echo -e "a echo hello\nb echo world\n= (* a b)" | plize
+
+./plize <<<'
+a echo hello
+b echo world
+= a
+= b
+'
+
+cat >spec <<HEREDOC
+= (+ c (* a b))
+a echo hello
+b echo world
+c echo ok
+HEREDOC
+./plize -c 8 -vv spec
+
