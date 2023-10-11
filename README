@@ -3,9 +3,10 @@ NAME
   Parallelize - Dependency defined bash scheduler
 
 USAGE
-  plize [-h] [-c CPUs] [-d] [-q] [-v | -vv] [-l log] [-o ofile] [file]
+  plize [-h] [-c CPUs] [-d] [-q] [-t subdep] [-v | -vv] [-l log] [-o ofile] [file]
 
-  Reads Tasks and Dependency Specification via STDIN if no [file] specified.
+  Reads a TASKS AND DEPENDENCIES LIST specification via STDIN if no [file]
+  specified.
 
   Returns 0 if all tasks succeed or the error number of the failing task.
   The scheduler stops if any task fails but will not stop any already
@@ -16,38 +17,43 @@ OPTIONS
   -c       CPU/threads/process limit
   -d       Dry run
   -q       Quiet prefixed task info for all job output
+  -t subid Top dependency tree override with sub-dependency id
   -v       Verbose runtime details
   -vv      Verbose plus dependency tree details
   -l       Logfile verbose messages are appended
   -o ofile Write a standalone runable script to ofile
   file     specification file
 
-TASKS AND DEPENDENCIES FILE:
+TASKS AND DEPENDENCIES LIST Syntax:
 
-  The specifcation file contains multiple lines of "task definitions" and
-  "dependency definitions."
+  A list containing multiple lines of TASK DEFINITIONS,
+  SUB DEPENDENCY definitions, and a main DEPENDENCY DEFINITION.
 
-  Examples:
+  Example 1:
 
+# A COMMENT
 task1 echo hello world
 task2 git clone stuff; sleep && date
 task3 cargo build | cat -n
-= (* task1 (+ task2 task3))
+=subtask (+ task2 task3)
+(* task1 =subtask)
+
+  Example 2:
 
 aa echo hello
 bb echo world
-= (+ aa bb)
+=sub (+ aa bb)
 cc echo done
-= (* aa cc)
+(* =sub cc)
 
 
-TASK DEFINITION SYNTAX:
+TASK DEFINITION Syntax:
 
     taskId bash-expression
 
-  A task definition consists of a unique task ID followed by a bash expression.
-  The bash-expression must be one line with no line breaks.  It may be
-  a compound expression IE with semicolons, pipes, etc.
+  A task definition is a line with two parts:  A unique task ID followed by
+  a bash expression.  The bash-expression must be one line with no line
+  breaks.  It may be a compound expression IE with semicolons, pipes, etc.
 
   The task IDs are used in the dependency tree definitions.
 
@@ -55,12 +61,32 @@ TASK DEFINITION SYNTAX:
 
     task1 sleep 1; echo hello world | xxd
 
-DEPENDENCY DEFINITION SYNTAX:
+SUB DEPENDENCY DEFINITION Syntax:
 
-    = sexpr
+    =taskId dependency-definition
 
-  A parenthesized prefix-style LISP expression (prefixed by a "=") containing
-  task Ids (specified via task definitions) and the following "operators":
+  A sub-dependency definition is a line with two parts:  A unique sub-task ID,
+  prefied with an equals "=" character, and a DEPENDENCY DEFINITION.  SUB
+  DEPENDENCIES can include other SUB DEPENDENCIES but cycles are not allowed.
+
+  Example:
+
+    taska echo a
+    taskb echo b
+    taskc echo c
+    =dep1 (+ taska taskb)
+    =dep2 (* dep1)
+    =dep3 (* =dep1 =dep2 c)
+    (+ =dep1 =dep3 c)
+
+
+DEPENDENCY DEFINITION Syntax:
+
+    sexpr
+
+  A parenthesized prefix-style LISP expression containing
+  TASK DEFINITION Ids and SUB DEPENDENCY Ids, grouped with the following
+  operators:
 
     *  parallel scheduled operator
     +  sequenced scheduled operator
@@ -73,16 +99,9 @@ DEPENDENCY DEFINITION SYNTAX:
   (+ B (* C D) E A).  The middle group runs sequentally B followed by (* C D),
   where C and D run in parallel, and finally E with A already having run.
 
-  TaskIDs can be used more than once in the tree but will only run one.
-
-  Mutliple dependency definitions are considered parallel tasks. IE
-
-    = (+ a b)
-    = c
-
-  is equivalent to
-
-    = (* (+ a b) c)
+  TASK DEFINITION Ids can be used more than once in the tree but will only
+  run one.  SUB DEPENDENCY ids can be used more than once as well with the
+  tasks only being run once as well.
 
 
 COMMAND LINE EXAMPLES
@@ -92,15 +111,16 @@ echo -e "a echo hello\nb echo world\n= (* a b)" | plize
 ./plize <<<'
 a echo hello
 b echo world
-= a
-= b
+(* a b)
 '
 
-cat >spec <<HEREDOC
-= (+ c (* a b))
+cat >specfile <<HEREDOC
+(+ c (* a b))
 a echo hello
 b echo world
 c echo ok
 HEREDOC
-./plize -c 8 -vv spec
+./plize -c 8 -vv -o script.sh -l log.out specfile
+./script.sh
+cat log.out
 

@@ -21,14 +21,17 @@ c sleep 1
 .
 REM
 
-./plize -c 8 -vv <<.
+./plize -c 4 -vv <<.
 a sleep 0; echo a
 aa sleep 1; echo aa 1>&2 ; echo aa 1>&2
 b sleep 2; echo b
 c2 sleep 1; echo c2; echo c2
 d sleep 1; echo d
 e_ sleep 3; echo _e
-= a (+ (* aa(+ b c2)d) e_) a
+=sub1 (+ b c2)
+=sub2 (+ a =sub1 a)
+(* a (+ (* aa =sub1 d) e_) =sub2)
+#(+ a (+ (* aa c2 d) e_) b)
 .
 
-echo TESTDONE.
+echo TestDone.

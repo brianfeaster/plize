@@ -12,6 +12,7 @@ function main () {
     local specfile=""
     local logfile=""
     local outputscript=""
+    local topdependency=""
 
     parseCommandArgs "$*"
     [ "$logfile" ] || setColors
@@ -21,18 +22,24 @@ function main () {
 
     declare -A tasks=()
     declare -A taskStates=()
-    declare -A taskStart=()
-    local dependencytree=("* ")
+    declare -A tasksTimeStarted=()
+    declare -A dependencies=()
+    local topsexpr="" 
+    local dependencytree=("")
     readTasksAndGraph
 
-    ((dryrun)) && return || {
-        if [ "$outputscript" ]
-        then
-          createScript
-        else
-          scheduler
-        fi
-    }
+    if ((dryrun))
+    then
+      ((debug)) && prettyPrintEverything
+      return
+    else
+      if [ "$outputscript" ]
+      then
+        createScript
+      else
+        scheduler
+      fi
+    fi
 }
 
 ########################################
@@ -58,6 +65,7 @@ function parseCommandArgs () {
       (-h) help=1 ;;
       (-d) dryrun=1 ;;
       (-q) quiet=1 ;;
+      (-t) read topdependency; [ "${topdependency:0:1}" == "=" ] || topdependency="=${topdependency}" ;;
       (-v) debug=1 ;;
       (-vv) debug=2 ;;
       (-c) read cpus ;;
@@ -74,9 +82,10 @@ NAME
   Parallelize - Dependency defined bash scheduler
 
 USAGE
-  plize [-h] [-c CPUs] [-d] [-q] [-v | -vv] [-l log] [-o ofile] [file]
+  plize [-h] [-c CPUs] [-d] [-q] [-t subdep] [-v | -vv] [-l log] [-o ofile] [file]
 
-  Reads Tasks and Dependency Specification via STDIN if no [file] specified.
+  Reads a TASKS AND DEPENDENCIES LIST specification via STDIN if no [file]
+  specified.
 
   Returns 0 if all tasks succeed or the error number of the failing task.
   The scheduler stops if any task fails but will not stop any already
@@ -87,38 +96,43 @@ OPTIONS
   -c       CPU/threads/process limit
   -d       Dry run
   -q       Quiet prefixed task info for all job output
+  -t subid Top dependency tree override with sub-dependency id
   -v       Verbose runtime details
   -vv      Verbose plus dependency tree details
   -l       Logfile verbose messages are appended
   -o ofile Write a standalone runable script to ofile
   file     specification file
 
-TASKS AND DEPENDENCIES FILE:
+TASKS AND DEPENDENCIES LIST Syntax:
 
-  The specifcation file contains multiple lines of "task definitions" and
-  "dependency definitions."
+  A list containing multiple lines of TASK DEFINITIONS,
+  SUB DEPENDENCY definitions, and a main DEPENDENCY DEFINITION.
 
-  Examples:
+  Example 1:
 
+# A COMMENT
 task1 echo hello world
 task2 git clone stuff; sleep && date
 task3 cargo build | cat -n
-= (* task1 (+ task2 task3))
+=subtask (+ task2 task3)
+(* task1 =subtask)
+
+  Example 2:
 
 aa echo hello
 bb echo world
-= (+ aa bb)
+=sub (+ aa bb)
 cc echo done
-= (* aa cc)
+(* =sub cc)
 
 
-TASK DEFINITION SYNTAX:
+TASK DEFINITION Syntax:
 
     taskId bash-expression
 
-  A task definition consists of a unique task ID followed by a bash expression.
-  The bash-expression must be one line with no line breaks.  It may be
-  a compound expression IE with semicolons, pipes, etc.
+  A task definition is a line with two parts:  A unique task ID followed by
+  a bash expression.  The bash-expression must be one line with no line
+  breaks.  It may be a compound expression IE with semicolons, pipes, etc.
 
   The task IDs are used in the dependency tree definitions.
 
@@ -126,12 +140,32 @@ TASK DEFINITION SYNTAX:
 
     task1 sleep 1; echo hello world | xxd
 
-DEPENDENCY DEFINITION SYNTAX:
+SUB DEPENDENCY DEFINITION Syntax:
 
-    = sexpr
+    =taskId dependency-definition
 
-  A parenthesized prefix-style LISP expression (prefixed by a "=") containing
-  task Ids (specified via task definitions) and the following "operators":
+  A sub-dependency definition is a line with two parts:  A unique sub-task ID,
+  prefied with an equals "=" character, and a DEPENDENCY DEFINITION.  SUB
+  DEPENDENCIES can include other SUB DEPENDENCIES but cycles are not allowed.
+
+  Example:
+
+    taska echo a
+    taskb echo b
+    taskc echo c
+    =dep1 (+ taska taskb)
+    =dep2 (* dep1)
+    =dep3 (* =dep1 =dep2 c)
+    (+ =dep1 =dep3 c)
+
+
+DEPENDENCY DEFINITION Syntax:
+
+    sexpr
+
+  A parenthesized prefix-style LISP expression containing
+  TASK DEFINITION Ids and SUB DEPENDENCY Ids, grouped with the following
+  operators:
 
     *  parallel scheduled operator
     +  sequenced scheduled operator
@@ -144,16 +178,9 @@ DEPENDENCY DEFINITION SYNTAX:
   (+ B (* C D) E A).  The middle group runs sequentally B followed by (* C D),
   where C and D run in parallel, and finally E with A already having run.
 
-  TaskIDs can be used more than once in the tree but will only run one.
-
-  Mutliple dependency definitions are considered parallel tasks. IE
-
-    = (+ a b)
-    = c
-
-  is equivalent to
-
-    = (* (+ a b) c)
+  TASK DEFINITION Ids can be used more than once in the tree but will only
+  run one.  SUB DEPENDENCY ids can be used more than once as well with the
+  tasks only being run once as well.
 
 
 COMMAND LINE EXAMPLES
@@ -163,38 +190,54 @@ echo -e "a echo hello\nb echo world\n= (* a b)" | plize
 ./plize <<<'
 a echo hello
 b echo world
-= a
-= b
+(* a b)
 '
 
-cat >spec <<HEREDOC
-= (+ c (* a b))
+cat >specfile <<HEREDOC
+(+ c (* a b))
 a echo hello
 b echo world
 c echo ok
 HEREDOC
-./plize -c 8 -vv spec
+./plize -c 8 -vv -o script.sh -l log.out specfile
+./script.sh
+cat log.out
 
 BLOCK
 }
 
 function readTasksAndGraph () {
-    declare -A graphTasks
-    local key value sexpr="" tokens
+    declare -A treeLeafs # For asserting all tasks are in dependency tree
+    local key value tokens
     while read -r key value
-    do case $key in
-        ("") ;;
-        (=) sexpr+=" $value" ;;
-        ("*"|"+") throwInvalidTaskId ;;
+    do
+      case "${key:0:1}" in
+        ('' | '#')  ;;
+        ('(')       [ "$topsexpr" ] && throwDependencyCollision || topsexpr+="$key $value" ;;
+        ('*' | '+') throwInvalidTaskId ;;
+        ('=') [ "${dependencies[$key]}" ] && throwDependencyCollision || dependencies+=($key $value) ;;
         (*) tasks[$key]=$value
             taskStates[$key]=ready
-            taskStart[$key]=0
+            tasksTimeStarted[$key]=0
             ;;
-        esac done
-    sexpr2tokens <<<$sexpr
-    tokens2graph 0 <<<$tokens
-    unset graphTasks[+] graphTasks['"*"']
-    (( ${#graphTasks[*]} == ${#tasks[*]})) || throwDependencyGraph
+      esac
+    done
+
+    if [ "$topdependency" ]
+    then
+      local token=$topdependency
+      [ "${dependencies[$token]}" ] || throwDependencyUnknown 
+      sexpr2tokens <<<${dependencies[$token]}
+      tokens2graph 0 <<<$tokens
+      # No task coverage check when overriding top dependency tree
+    else
+      sexpr2tokens <<<$topsexpr
+      tokens2graph 0 <<<$tokens
+      # Verify all tasks in dependency tree
+      unset treeLeafs[+] treeLeafs['"*"'] # Remove ops
+      (( ${#treeLeafs[*]} == ${#tasks[*]} )) || throwDependencyGraph
+    fi
+
 }
 
 function sexpr2tokens () {
@@ -205,21 +248,35 @@ function sexpr2tokens () {
         (" "|$'\t') tokens+=$'\n';;
         (*) tokens+=$c ;;
     esac done
+    tokens=${tokens#*(} # ignore first paren, presume parsing a list
 }
 
 function tokens2graph () {
-    local task depth=$1
-    while read -r task
+    local token idx=$1 idxNext
+    while read -r token
     do
-      case $task in
-        ('(')
-            dependencytree[depth]+="$((1+depth)) "
-            tokens2graph $((depth+1))
-            ;;
+      case $token in
+        ('(') idxNext="${#dependencytree[*]}"
+              dependencytree[idx]+="$idxNext "
+              tokens2graph $idxNext
+              ;;
         (')') return ;;
         ("") ;;
-        (*) graphTasks[$task]=
-            dependencytree[depth]+="$task "
+        (*) if [ "${token:0:1}" == "=" ]
+            then
+              [ "${dependencies[$token]}" == "" ] && throwDependencyUnknown 
+              [ "${dependencies[$token]:0:1}" == "#" ] && throwDependencyCycle 
+              local tokens
+              sexpr2tokens <<<${dependencies[$token]}
+              idxNext="${#dependencytree[*]}"
+              dependencytree[$idx]+="$idxNext "
+              dependencies[$token]="#${dependencies[$token]}" # set loop detection sentinel
+              tokens2graph $idxNext <<<$tokens # parser recursion
+              dependencies[$token]="${dependencies[$token]:1}" # unset sentinel
+            else
+              treeLeafs[$token]="" # keep track of used tasks
+              dependencytree[$idx]+="$token "
+            fi
             ;;
       esac
     done
@@ -231,9 +288,9 @@ function createScript () {
     {
       printf '#!/bin/bash\n'
       printf 'function main () {\nlocal -\nset +e +m -f\n'
-      declare -p NORM RED GREEN YELLOW CYAN IRED IGREEN IBLUE ICYAN IMAGENTA WHITE quiet debug cpus logfile tasks taskStates taskStart dependencytree
+      declare -p NORM RED GREEN YELLOW CYAN IRED IGREEN IBLUE ICYAN IMAGENTA WHITE quiet debug cpus logfile topdependency tasks taskStates tasksTimeStarted dependencies topsexpr dependencytree
       printf 'scheduler\n}\n'
-      declare -f scheduler spawnNextFree spawnTask waitForATask prettyPrintEverything _prettyPrintEverything prettyPrintGraph _prettyPrintGraph reportTaskFail reportSpawned reportWaitingOnPid reportTaskCompleted throwUnknownDependency 
+      declare -f scheduler spawnNextFree spawnTask waitForATask prettyPrintEverything _prettyPrintEverything prettyPrintGraph _prettyPrintGraph reportTaskFail reportSpawned reportWaitingOnPid reportTaskCompleted throwUnknownOp 
       echo main
     } > $outputscript
     chmod u+x $outputscript
@@ -281,9 +338,7 @@ function spawnNextFree () {
             done
             return 2
             ;;
-        (*)
-            throwUnknownDependency
-            exit 4 ;;
+        (*) throwUnknownOp ;;
         esac
 
     else
@@ -311,7 +366,7 @@ function spawnTask () {
 
     pid2task[$!]=$taskId
     taskStates[$taskId]=running
-    taskStart[$taskId]=$SECONDS
+    tasksTimeStarted[$taskId]=$SECONDS
     ((debug)) && reportSpawned
     return 0
 }
@@ -328,7 +383,7 @@ function waitForATask () {
     taskId=${pid2task[$pid]}
     taskCmd=${tasks[$taskId]}
     unset pid2task[$pid]
-    start=${taskStart[$taskId]}
+    start=${tasksTimeStarted[$taskId]}
     runtime=$((SECONDS-start))
 
     if ((errnum))
@@ -356,7 +411,16 @@ function _prettyPrintEverything () {
     do
         echo " $GREEN$k $YELLOW${taskStates[$k]} $NORM${tasks[$k]}"
     done
-    echo -ne "${WHITE}TREE$NORM\n "
+    if (( ${#dependencies[*]} ))
+    then
+      echo -ne "${WHITE}SUB DEPENDENCIES$NORM\n"
+      for k in ${!dependencies[*]}
+      do
+        printf " $k ${dependencies[$k]}\n"
+      done
+      printf " $topsexpr\n" 
+    fi
+    echo -ne "${WHITE}DEPENDENCY TREE$NORM\n "
 }
 
 function prettyPrintGraph () {
@@ -367,7 +431,8 @@ function prettyPrintGraph () {
 function _prettyPrintGraph () {
     if [ "${1//[0-9]}" == "" ]
     then
-        local a w="("
+        local a w=""
+        printf "("
         for a in ${dependencytree[$1]}
         do
             printf "$w"
@@ -388,7 +453,7 @@ function _prettyPrintGraph () {
 
 function reportTaskFail () {
     local s=s
-    let b="$IRED[Exception pid $pid:$taskId returned $errnum ${runtime} sec${s:0:runtime!=1}]$NORM $taskCmd"
+    local b="$IRED[Exception pid $pid:$taskId returned $errnum ${runtime} sec${s:0:runtime!=1}]$NORM $taskCmd"
     [ "$logfile" ] && echo "$b" >>$logfile || echo "$b"
 }
 
@@ -414,7 +479,7 @@ function reportWaitingOnPid () {
 function reportTaskCompleted () {
     local s=s
     local b=$(
-      echo -n "$IGREEN[Completed $pid:$taskId ${runtime} sec${s:0:runtime!=1})]$NORM $taskCmd "
+      echo -n "$IGREEN[Completed $pid:$taskId ${runtime} sec${s:0:runtime!=1}]$NORM $taskCmd "
       local logfile=
       ((2 <= debug)) && prettyPrintGraph
     )
@@ -430,7 +495,7 @@ function throwInvalidFile () {
 }
 
 function throwInvalidTaskId () {
-    local s="$IRED[EXCEPTION task definition invlaid key]$NORM $key $value"
+    local s="$IRED[EXCEPTION task definition invalid key]$NORM $key $value"
     [ "$logfile" ] && echo $s >>$logfile || echo $s
     exit 3
 }
@@ -442,10 +507,29 @@ function throwDependencyGraph () {
     exit 4
 }
 
-function throwUnknownDependency () {
-    local s="$IRED[EXCEPTION unknown dependency op '$p'] $NORM"
+function throwUnknownOp () {
+    local s="$IRED[EXCEPTION unknown operator '${dependencytree[depth]%% *}'] $NORM"
     [ "$logfile" ] && printf "$s" >>$logfile || printf "$s"
     prettyPrintGraph
+    exit 5
+}
+
+function throwDependencyCollision () {
+    local s="$IRED[EXCEPTION dependency collision '$key $value'] $NORM\n"
+    [ "$logfile" ] && printf "$s" >>$logfile || printf "$s"
+    exit 6
+}
+
+function throwDependencyCycle () {
+    local s="$IRED[EXCEPTION dependency cycle '$token ${dependencies[$token]}'] $NORM\n"
+    [ "$logfile" ] && printf "$s" >>$logfile || printf "$s"
+    exit 7
+}
+
+function throwDependencyUnknown () {
+    local s="$IRED[EXCEPTION dependency not found '$token'] $NORM\n"
+    [ "$logfile" ] && printf "$s" >>$logfile || printf "$s"
+    exit 8
 }
 
 main "$@"
