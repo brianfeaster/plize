@@ -1,79 +1,65 @@
 #!/bin/bash
 
 function main () {
-    local -
-    set +e +m -f
-    local NORM RED GREEN YELLOW CYAN IRED IGREEN IBLUE ICYAN IMAGENTA WHITE
+    local - # set applies to function only
+    set +e +m -f # no exit on error, no monitor jobs mode, no pathname expansion
+
+    local NORM RED GREEN YELLOW CYAN IRED IGREEN IMAGENTA WHITE
     local help=0
     local dryrun=0
     local quiet=0
     local debug=0
-    declare -i cpus=2
+    local -i cpus=2
     local specfile=""
     local logfile=""
     local outputscript=""
-    local topdependency=""
-
+    local topdependency="=top"
     parseCommandArgs "$*"
-    [ "$logfile" ] || setColors
 
     ((help)) && help && return
+    [ "$logfile" ] || setColors
     [ "$specfile" ] && { [ -e "$specfile" ] && exec <$specfile || throwInvalidFile; }
 
-    declare -A tasks=()
-    declare -A taskStates=()
-    declare -A tasksTimeStarted=()
-    declare -A dependencies=()
-    local topsexpr="" 
-    local dependencytree=("")
-    readTasksAndGraph
+    local -A taskStates=() tasksTimeStarted=() sheap=(@ 0)
+    readParseConfiguration
+    validateDependencyTree
 
-    if ((dryrun))
-    then
-      ((debug)) && prettyPrintEverything
-      return
-    else
-      if [ "$outputscript" ]
-      then
-        createScript
-      else
-        scheduler
-      fi
-    fi
+    ((dryrun)) && { ((debug)) && prettyPrintEverything; return; }
+    [ "$outputscript" ] && generateStandaloneScript || startScheduler
 }
 
 ########################################
 
 function setColors () {
-    NORM=$'\e[m'
-    RED=$'\e[0;31m'
-    GREEN=$'\e[0;32m'
-    YELLOW=$'\e[0;33m'
-    CYAN=$'\e[0;36m'
-    IRED=$'\e[1;31m'
-    IGREEN=$'\e[1;32m'
-    IBLUE=$'\e[1;34m'
-    ICYAN=$'\e[1;36m'
-    IMAGENTA=$'\e[1;35m'
-    WHITE=$'\e[1;37m'
+  NORM=$'\e[m'
+  RED=$'\e[0;31m'
+  GREEN=$'\e[0;32m'
+  YELLOW=$'\e[0;33m'
+  CYAN=$'\e[0;36m'
+  IRED=$'\e[1;31m'
+  IGREEN=$'\e[1;32m'
+  IMAGENTA=$'\e[1;35m'
+  WHITE=$'\e[1;37m'
 }
 
 function parseCommandArgs () {
-    local a
-    while read a
-    do case $a in
-      (-h) help=1 ;;
-      (-d) dryrun=1 ;;
-      (-q) quiet=1 ;;
-      (-t) read topdependency; [ "${topdependency:0:1}" == "=" ] || topdependency="=${topdependency}" ;;
-      (-v) debug=1 ;;
-      (-vv) debug=2 ;;
-      (-c) read cpus ;;
-      (-l) read logfile ;;
-      (-o) read outputscript ;;
-      (*) [ a[0] != - ] && specfile=$a ;;
-    esac done < <(tr " " "\n" <<<$*)
+  local s
+  while read s
+  do case $s in
+    (-h) help=1 ;;
+    (-c) read cpus ;;
+    (-d) dryrun=1 ;;
+    (-q) quiet=1 ;;
+    (-t) read topdependency; topdependency==${topdependency/#=} ;;
+    (-v) debug=1 ;;
+    (-vv) debug=2 ;;
+    (-l) read logfile ;;
+    (-o) read outputscript ;;
+    (*) specfile=$s ;;
+  esac done < <(tr " " "\n" <<<$*)
 }
+
+########################################
 
 function help () {
     cat <<BLOCK
@@ -98,10 +84,10 @@ OPTIONS
   -q       Quiet prefixed task info for all job output
   -t subid Top dependency tree override with sub-dependency id
   -v       Verbose runtime details
-  -vv      Verbose plus dependency tree details
-  -l       Logfile verbose messages are appended
-  -o ofile Write a standalone runable script to ofile
-  file     specification file
+  -vv      Verbose runtime plus dependency tree details
+  -l file  Log file log messages (-v and -vv) are appended
+  -o file  Output a standalone runable script to file
+  file     Filename containing tasks and dependencies list
 
 TASKS AND DEPENDENCIES LIST Syntax:
 
@@ -206,193 +192,237 @@ cat log.out
 BLOCK
 }
 
-function readTasksAndGraph () {
-    declare -A treeLeafs # For asserting all tasks are in dependency tree
-    local key value tokens
-    while read -r key value
-    do
-      case "${key:0:1}" in
-        ('' | '#')  ;;
-        ('(')       [ "$topsexpr" ] && throwDependencyCollision || topsexpr+="$key $value" ;;
-        ('*' | '+') throwInvalidTaskId ;;
-        ('=') [ "${dependencies[$key]}" ] && throwDependencyCollision || dependencies+=($key $value) ;;
-        (*) tasks[$key]=$value
-            taskStates[$key]=ready
-            tasksTimeStarted[$key]=0
-            ;;
-      esac
-    done
+########################################
 
-    if [ "$topdependency" ]
-    then
-      local token=$topdependency
-      [ "${dependencies[$token]}" ] || throwDependencyUnknown 
-      sexpr2tokens <<<${dependencies[$token]}
-      tokens2graph 0 <<<$tokens
-      # No task coverage check when overriding top dependency tree
-    else
-      sexpr2tokens <<<$topsexpr
-      tokens2graph 0 <<<$tokens
-      # Verify all tasks in dependency tree
-      unset treeLeafs[+] treeLeafs['"*"'] # Remove ops
-      (( ${#treeLeafs[*]} == ${#tasks[*]} )) || throwDependencyGraph
-    fi
-
+function assertSheapKeyFree () {
+  [ "${sheap[$key]}" ] && throwDependencyOrTaskCollision
+  true
 }
 
-function sexpr2tokens () {
-    local c IFS=
-    while read -r -n 1 c
-    do case $c in
-        ("("|")") tokens+=$'\n'$c$'\n' ;;
-        (" "|$'\t') tokens+=$'\n';;
-        (*) tokens+=$c ;;
-    esac done
-    tokens=${tokens#*(} # ignore first paren, presume parsing a list
+function internKeyValueAsTask () {
+  assertSheapKeyFree
+  sheap[$key]=$value
+  taskStates[$key]=ready
+  tasksTimeStarted[$key]=0
 }
 
-function tokens2graph () {
-    local token idx=$1 idxNext
-    while read -r token
+function readParseConfiguration () {
+  local key value
+  while read -r key value
+  do
+    case "${key:0:1}" in
+      (""|"#") # comment or blank line
+        ;;
+      ("(") # intern top dependency
+        value="$key $value"
+        key="=top"
+        assertSheapKeyFree
+        sparse =top "$value"
+        ;;
+      (=) # intern sub dependency
+        assertSheapKeyFree
+        sparse $key "$value"
+        ;;
+      (*) # intern task
+        internKeyValueAsTask
+        ;;
+    esac
+  done
+}
+
+function sparse () {
+  local N=$'\n' sym=$1 toks=$2
+
+  # Preprocess tokens onto separate lines
+  toks=${toks//(/$N($N}
+  toks=${toks//)/$N)$N}
+  toks=${toks// /$N}
+
+  _sparse $sym <<<$toks
+}
+
+function _sparse () {
+  local token sym=$1 pad=""
+  while read -r token
+  do
+    case $token in
+      ('') continue ;; # skip empty lines
+      ('(') # add list ref, recursively create list
+        sheap[$sym]+=$pad@$((sheap['@']))
+        _sparse $((sheap['@']++))
+        ;;
+      (')') return ;; # end of list, return from recursion
+      (*) sheap[$sym]+=$pad$token ;; # add token to list, continue looping
+    esac
+    pad=" "
+  done
+}
+
+
+function validateDependencyTree () {
+  local -A subs
+  _validateDependencyTree $topdependency
+}
+
+function _validateDependencyTree () {
+  local task tasks
+  read task tasks <<<$1
+  if [ "$tasks" ]
+  then # Verify dependency expression
+    # Verify op
+    [ "${task/[*+]}" ] && throwUnknownOp
+    # Recursively verify list of tasks/subtasks
+    for task in $tasks
     do
-      case $token in
-        ('(') idxNext="${#dependencytree[*]}"
-              dependencytree[idx]+="$idxNext "
-              tokens2graph $idxNext
-              ;;
-        (')') return ;;
-        ("") ;;
-        (*) if [ "${token:0:1}" == "=" ]
-            then
-              [ "${dependencies[$token]}" == "" ] && throwDependencyUnknown 
-              [ "${dependencies[$token]:0:1}" == "#" ] && throwDependencyCycle 
-              local tokens
-              sexpr2tokens <<<${dependencies[$token]}
-              idxNext="${#dependencytree[*]}"
-              dependencytree[$idx]+="$idxNext "
-              dependencies[$token]="#${dependencies[$token]}" # set loop detection sentinel
-              tokens2graph $idxNext <<<$tokens # parser recursion
-              dependencies[$token]="${dependencies[$token]:1}" # unset sentinel
-            else
-              treeLeafs[$token]="" # keep track of used tasks
-              dependencytree[$idx]+="$token "
-            fi
-            ;;
-      esac
+      _validateDependencyTree $task
     done
+  else # Verify single task or subtask or list ref
+    case "${task:0:1}" in
+     (@)
+       _validateDependencyTree "${sheap[${task:1}]}"
+       ;;
+     (=)
+       [ "${sheap[$task]}" ] || throwDependencyUnknownOrTask
+       ((subs[$task])) && throwDependencyCycle
+       subs[$task]=1
+         _validateDependencyTree ${sheap[$task]}
+       unset subs[$task]
+       ;;
+     (*)
+       [ "${task//[0-9]/}" ] && [ "${sheap[$task]}" ] || throwDependencyUnknownOrTask
+       ;;
+    esac
+  fi
 }
 
 ########################################
 
-function createScript () {
-    {
-      printf '#!/bin/bash\n'
-      printf 'function main () {\nlocal -\nset +e +m -f\n'
-      declare -p NORM RED GREEN YELLOW CYAN IRED IGREEN IBLUE ICYAN IMAGENTA WHITE quiet debug cpus logfile topdependency tasks taskStates tasksTimeStarted dependencies topsexpr dependencytree
-      printf 'scheduler\n}\n'
-      declare -f scheduler spawnNextFree spawnTask waitForATask prettyPrintEverything _prettyPrintEverything prettyPrintGraph _prettyPrintGraph reportTaskFail reportSpawned reportWaitingOnPid reportTaskCompleted throwUnknownOp 
-      echo main
-    } > $outputscript
-    chmod u+x $outputscript
+function generateStandaloneScript () {
+  {
+    printf '#!/bin/bash\n'
+    printf 'function main () {\nlocal -\nset +e +m -f\n'
+    declare -p NORM RED GREEN YELLOW CYAN IRED IGREEN IMAGENTA WHITE quiet debug cpus logfile topdependency taskStates tasksTimeStarted sheap
+    printf 'startScheduler\n}\n'
+    declare -f startScheduler spawnMaxCpus spawnNextReady spawnNextReadyNode spawnNextReadyList spawnTask waitForAnyTask prettyPrintEverything colorizeTaskState _prettyPrintEverything prettyPrintGraph _prettyPrintGraph reportTaskFail reportSpawned reportWaitingOnPid reportTaskCompleted
+    echo main
+  } > $outputscript
+  chmod u+x $outputscript
 }
 
 ########################################
 
-function scheduler () {
-    local pid2task=() errnum=0
-    ((debug)) && prettyPrintEverything
-    while ((${#pid2task[*]} < cpus)) && spawnNextFree 0; do :; done
-    while waitForATask
-    do
-        while ((${#pid2task[*]} < cpus)) && spawnNextFree 0; do :; done
-    done
-    ((debug)) && prettyPrintEverything
-    return $errnum
+function startScheduler () {
+  local pid2task=() errnum=0
+  ((debug)) && prettyPrintEverything
+  spawnMaxCpus
+  while waitForAnyTask
+  do
+    spawnMaxCpus
+  done
+  ((debug)) && prettyPrintEverything
+  return $errnum
 }
 
-function spawnNextFree () {
-    if [ "${1//[0-9]}" == "" ]
-    then
-        local depth=$1 taskId allFinished=1
-        case ${dependencytree[depth]%% *} in
-        ("*")
-            for taskId in ${dependencytree[depth]#* }
-            do
-              spawnNextFree $taskId
-                case $? in
-                    (0) return 0 ;;
-                    (2) ;;
-                    (*) allFinished=0 ;;
-                esac
-            done
-            return $((allFinished ? 2 : 1))
-            ;;
-        ("+")
-            for taskId in ${dependencytree[depth]#* }
-            do
-                spawnNextFree $taskId
-                case $? in
-                    (2) ;;
-                    (*) return $? ;;
-                esac
-            done
-            return 2
-            ;;
-        (*) throwUnknownOp ;;
-        esac
+function spawnMaxCpus () {
+  while ((${#pid2task[*]} < cpus))
+  do
+    spawnNextReady $topdependency || break
+  done
+}
 
-    else
-        local taskId=$1
-        case ${taskStates[$taskId]} in
-            (ready) spawnTask; return 0 ;;
-            (running) return 1 ;;
-            (finished) return 2 ;;
-            (failed|*) return 3 ;;
+function spawnNextReady () {
+  local task tasks
+  read task tasks <<<$1
+  if [ "$tasks" ]
+  then
+   spawnNextReadyList
+  else
+    spawnNextReadyNode
+  fi
+}
+
+function spawnNextReadyList () {
+  local op=$task tasksFinished=1
+  for task in $tasks
+  do
+    spawnNextReady $task
+    case $op in
+    ('*')
+        case $? in
+          (0) return 0 ;; # spawned (stop looking)
+          (1) tasksFinished=0 ;; # running , keep looking (also no longer assume all tasks finished)
+          (2) ;; # already finished, keep looking
+          (3) return $? # failure detected (halt scheduler)
         esac
-    fi
+      ;;
+    ('+')
+        case $? in
+          (2) ;; # finished task, keep looking
+          (*) return $? ;; # either spawned (stop looking), running (need to wait), failed (halt scheduler)
+        esac
+      ;;
+    esac
+  done
+  return $((tasksFinished ? 2 : 1))
+}
+
+function spawnNextReadyNode () {
+  case ${task:0:1} in
+    (=) # follow sub dependency
+      spawnNextReady "${sheap[$task]}"
+      ;;
+    (@) # follow list ref
+      spawnNextReady "${sheap[${task:1}]}"
+      ;;
+    (*) # maybe spawn task
+      case ${taskStates[$task]} in
+        (ready) spawnTask; return 0 ;; # success (search stops)
+        (running) return 1 ;;
+        (finished) return 2 ;;
+        (failed|*) return 3 ;;
+      esac
+      ;;
+  esac
 }
 
 function spawnTask () {
-    local taskCmd="${tasks[$taskId]}"
-    if ((quiet))
-    then
-        eval "$taskCmd" &
-    else
-        eval "{ $taskCmd ; } \
-        2> >(while read -r l; do echo   \"$RED[$BASHPID:$taskId]$NORM \$l\"; done) \
-        1> >(while read -r l; do echo \"$GREEN[$BASHPID:$taskId]$NORM \$l\"; done)" \
-        &
-    fi
-
-    pid2task[$!]=$taskId
-    taskStates[$taskId]=running
-    tasksTimeStarted[$taskId]=$SECONDS
-    ((debug)) && reportSpawned
-    return 0
+  local taskCmd="${sheap[$task]}"
+  if ((quiet))
+  then
+    eval "$taskCmd" &
+  else
+    eval "{ $taskCmd ; } \
+      2> >(while read -r l; do echo   \"$RED[$BASHPID:$task]$NORM \$l\"; done) \
+      1> >(while read -r l; do echo \"$GREEN[$BASHPID:$task]$NORM \$l\"; done)" \
+      &
+  fi
+  pid2task[$!]=$task
+  taskStates[$task]=running
+  tasksTimeStarted[$task]=$SECONDS
+  ((debug)) && reportSpawned
 }
 
-function waitForATask () {
-    local pid taskId taskCmd start runtime
-    ((${#pid2task[@]})) || return 255
+function waitForAnyTask () {
+    local pid task taskCmd runtime errnum
 
+    ((${#pid2task[@]})) || return 255
     ((debug)) && reportWaitingOnPid
 
     wait -p pid -n ${!pid2task[@]}
 
     errnum=$?
-    taskId=${pid2task[$pid]}
-    taskCmd=${tasks[$taskId]}
+    task=${pid2task[$pid]}
     unset pid2task[$pid]
-    start=${tasksTimeStarted[$taskId]}
-    runtime=$((SECONDS-start))
+    taskCmd=${sheap[$task]}
+    runtime=$((SECONDS-tasksTimeStarted[task]))
 
     if ((errnum))
     then
-        taskStates[$taskId]=failed
+        taskStates[$task]="failed"
         reportTaskFail
         return $errnum
     else
-        taskStates[$taskId]=finished
+        taskStates[$task]="finished"
         ((debug)) && reportTaskCompleted
         return 0
     fi
@@ -401,76 +431,103 @@ function waitForATask () {
 ########################################
 
 function prettyPrintEverything () {
+    local expand=1
     [ "$logfile" ] && _prettyPrintEverything >>$logfile || _prettyPrintEverything
     prettyPrintGraph
 }
 
+function colorizeTaskState () {
+  case $1 in
+    (running) printf "$YELLOW$1$NORM" ;;
+    (finished) printf "$IGREEN$1$NORM" ;;
+    (failed) printf "$IRED$1$NORM" ;;
+    (ready|*) printf "$1"
+  esac
+}
+
 function _prettyPrintEverything () {
-    echo -e "${WHITE}--TASKS--------$NORM"
-    for k in $(sort <(tr \  \\n <<<${!tasks[@]}))
+    local k key expand=0
+
+    echo -e "$WHITE--Tasks--------$NORM"
+    for k in $(sort <(tr \  \\n <<<${!sheap[@]}))
     do
-        echo " $GREEN$k $YELLOW${taskStates[$k]} $NORM${tasks[$k]}"
+      case ${k:0:1} in
+        ([@=0123456789]) : ;;
+        (*) echo " $WHITE$k$NORM $(colorizeTaskState ${taskStates[$k]}) $NORM${sheap[$k]}" ;;
+      esac
     done
-    if (( ${#dependencies[*]} ))
+
+    if (( ${#dependencies[*]} | 1))
     then
-      echo -ne "${WHITE}SUB DEPENDENCIES$NORM\n"
-      for k in ${!dependencies[*]}
+      echo -ne "$WHITE--Dependencies--------$NORM\n"
+      for key in ${!sheap[*]}
       do
-        printf " $k ${dependencies[$k]}\n"
+        [ ${key} != =top ] && [ "${key:0:1}" == = ] \
+            && printf " $CYAN$key$NORM $(_prettyPrintGraph ${sheap[$key]})\n"
       done
-      printf " $topsexpr\n" 
+      printf " $(_prettyPrintGraph ${sheap[=top]})\n"
     fi
-    echo -ne "${WHITE}DEPENDENCY TREE$NORM\n "
+
+    echo -ne "$WHITE--Scheduled--------$NORM\n"
 }
 
 function prettyPrintGraph () {
-    local s=$(_prettyPrintGraph 0)
-    [ "$logfile" ] && echo "$s" >>$logfile || echo "$s"
+  local s=" "
+  [ "$topdependency" == =top ] || s+="$topdependency "
+  s+=$(_prettyPrintGraph $topdependency)
+  [ "$logfile" ] && echo "$s" >>$logfile || echo "$s"
 }
 
 function _prettyPrintGraph () {
-    if [ "${1//[0-9]}" == "" ]
-    then
-        local a w=""
-        printf "("
-        for a in ${dependencytree[$1]}
-        do
-            printf "$w"
-            _prettyPrintGraph $a
-            w=" "
-        done
-        printf ")"
-    else
-        case ${taskStates[$1]} in
-            (ready) printf "$1" ;;
-            (running) printf "$IGREEN$1$NORM" ;;
-            (finished) printf "$IBLUE$1$NORM" ;;
-            (failed) printf "$IRED$1$NORM" ;;
-            (*) printf "$1" ;;
-        esac
-    fi
+  local s=$1 v pad=""
+
+  case ${s:0:1} in
+    (@)
+      printf "("
+      for v in ${sheap[${s:1}]}
+      do
+        printf "$pad"
+        _prettyPrintGraph $v
+        pad=' '
+      done
+      printf ")"
+      ;;
+    (=)
+      ((expand)) && _prettyPrintGraph "${sheap[$s]}" || printf "$CYAN$s$NORM"
+      ;;
+    (*)
+      case ${taskStates[$s]} in
+        (running) printf "$YELLOW$s$NORM" ;;
+        (finished) printf "$IGREEN$s$NORM" ;;
+        (failed) printf "$IRED$s$NORM" ;;
+        (ready|*) printf "$s" ;;
+      esac
+      ;;
+  esac
 }
+
+########################################
 
 function reportTaskFail () {
     local s=s
-    local b="$IRED[Exception pid $pid:$taskId returned $errnum ${runtime} sec${s:0:runtime!=1}]$NORM $taskCmd"
+    local b="$IRED[Exception pid $pid:$task returned $errnum ${runtime} sec${s:0:runtime!=1}]$NORM $taskCmd"
     [ "$logfile" ] && echo "$b" >>$logfile || echo "$b"
 }
 
 function reportSpawned () {
-    local s="$IMAGENTA[Spawned $!:$taskId]$NORM $taskCmd"
+    local s="$IMAGENTA[Spawned $!:$task]$NORM $taskCmd"
     [ "$logfile" ] && echo "$s" >>$logfile || echo "$s"
 }
 
 function reportWaitingOnPid () {
-    local all=""
+    local p all=""
     for p in ${!pid2task[*]}
     do
         all+=" $p:${pid2task[$p]}"
     done
     local s=$(
         echo -n "$IMAGENTA[Waiting on ${#pid2task[@]} $all]$NORM "
-        local logfile=
+        local logfile= expand=1
         ((2 <= debug)) && prettyPrintGraph
     )
     [ "$logfile" ] && echo $s >>$logfile || echo $s
@@ -479,8 +536,8 @@ function reportWaitingOnPid () {
 function reportTaskCompleted () {
     local s=s
     local b=$(
-      echo -n "$IGREEN[Completed $pid:$taskId ${runtime} sec${s:0:runtime!=1}]$NORM $taskCmd "
-      local logfile=
+      echo -n "$IGREEN[Completed $pid:$task ${runtime} sec${s:0:runtime!=1}]$NORM $taskCmd "
+      local logfile= expand=1
       ((2 <= debug)) && prettyPrintGraph
     )
     [ "$logfile" ] && echo $b >>$logfile || echo $b
@@ -494,42 +551,29 @@ function throwInvalidFile () {
     exit 2
 }
 
-function throwInvalidTaskId () {
-    local s="$IRED[EXCEPTION task definition invalid key]$NORM $key $value"
-    [ "$logfile" ] && echo $s >>$logfile || echo $s
+function throwUnknownOp () {
+    local s="$IRED[EXCEPTION unknown operator '$task']$NORM "
+    [ "$logfile" ] && printf "$s" >>$logfile || printf "$s"
+    prettyPrintGraph
     exit 3
 }
 
-function throwDependencyGraph () {
-    local s="$IRED[EXCEPTION dependency tree missing one or more tasks]$NORM"
-    [ "$logfile" ] && echo $s >>$logfile || echo $s
-    prettyPrintEverything
+function throwDependencyOrTaskCollision () {
+    local s="$IRED[EXCEPTION dependency collision '$key' '$value'] $NORM\n"
+    [ "$logfile" ] && printf "$s" >>$logfile || printf "$s"
     exit 4
 }
 
-function throwUnknownOp () {
-    local s="$IRED[EXCEPTION unknown operator '${dependencytree[depth]%% *}'] $NORM"
+function throwDependencyCycle () {
+    local s="$IRED[EXCEPTION dependency cycle '$token'] $NORM\n"
     [ "$logfile" ] && printf "$s" >>$logfile || printf "$s"
-    prettyPrintGraph
     exit 5
 }
 
-function throwDependencyCollision () {
-    local s="$IRED[EXCEPTION dependency collision '$key $value'] $NORM\n"
+function throwDependencyUnknownOrTask () {
+    local s="$IRED[EXCEPTION unknown dependency or task '$task'] $NORM\n"
     [ "$logfile" ] && printf "$s" >>$logfile || printf "$s"
     exit 6
-}
-
-function throwDependencyCycle () {
-    local s="$IRED[EXCEPTION dependency cycle '$token ${dependencies[$token]}'] $NORM\n"
-    [ "$logfile" ] && printf "$s" >>$logfile || printf "$s"
-    exit 7
-}
-
-function throwDependencyUnknown () {
-    local s="$IRED[EXCEPTION dependency not found '$token'] $NORM\n"
-    [ "$logfile" ] && printf "$s" >>$logfile || printf "$s"
-    exit 8
 }
 
 main "$@"

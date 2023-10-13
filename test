@@ -13,16 +13,17 @@ export -f fun2 fun3 fun4
 #fun & fun & fun & fun & fun &
 
 <<REM
-./plize -c 3 -vv <<.
-a sleep 1
-b sleep 1
-c sleep 1
-= (+ a b c)
+./plize -c 2 -vv <<.
+* echo *
++ echo +
+=* *
+=+ +
+(+ =* =+ )
 .
 REM
 
-./plize -c 4 -vv <<.
-a sleep 0; echo a
+./plize -c 3 -vv <<.
+a sleep 1; echo a
 aa sleep 1; echo aa 1>&2 ; echo aa 1>&2
 b sleep 2; echo b
 c2 sleep 1; echo c2; echo c2
@@ -30,8 +31,8 @@ d sleep 1; echo d
 e_ sleep 3; echo _e
 =sub1 (+ b c2)
 =sub2 (+ a =sub1 a)
-(* a (+ (* aa =sub1 d) e_) =sub2)
-#(+ a (+ (* aa c2 d) e_) b)
+=sub3 =sub2
+=sub4 e_
+(* a (+(* aa =sub1 d) e_) =sub3 =sub4)
 .
-
 echo TestDone.

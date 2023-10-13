@@ -8,7 +8,7 @@ mv    mv -v wavefunctioncollapse-main wfc
 run   cd wfc; cargo build --release; cargo run --release & sleep 6 ; kill %1
 del   rm -rf wfc; echo del wfc recursive
 ls    ls -oF
-= (+ wget zip mv ls (* rm run) del)
+(+ wget zip mv ls (* rm run) del)
 ' | ./plize -vv -o run.sh -l log
 
 ./run.sh

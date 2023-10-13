@@ -19,10 +19,10 @@ OPTIONS
   -q       Quiet prefixed task info for all job output
   -t subid Top dependency tree override with sub-dependency id
   -v       Verbose runtime details
-  -vv      Verbose plus dependency tree details
-  -l       Logfile verbose messages are appended
-  -o ofile Write a standalone runable script to ofile
-  file     specification file
+  -vv      Verbose runtime plus dependency tree details
+  -l file  Log file log messages (-v and -vv) are appended
+  -o file  Output a standalone runable script to file
+  file     Filename containing tasks and dependencies list
 
 TASKS AND DEPENDENCIES LIST Syntax:
 
