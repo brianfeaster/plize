@@ -403,7 +403,8 @@ function spawnTask () {
 }
 
 function waitForAnyTask () {
-    local pid task taskCmd runtime errnum
+    local pid task taskCmd errnum
+    local -i runtime
 
     ((${#pid2task[@]})) || return 255
     ((debug)) && reportWaitingOnPid
@@ -414,7 +415,7 @@ function waitForAnyTask () {
     task=${pid2task[$pid]}
     unset pid2task[$pid]
     taskCmd=${sheap[$task]}
-    runtime=$((SECONDS-tasksTimeStarted[task]))
+    runtime=SECONDS-tasksTimeStarted[task]
 
     if ((errnum))
     then
@@ -457,16 +458,13 @@ function _prettyPrintEverything () {
       esac
     done
 
-    if (( ${#dependencies[*]} | 1))
-    then
-      echo -ne "$WHITE--Dependencies--------$NORM\n"
-      for key in ${!sheap[*]}
-      do
-        [ ${key} != =top ] && [ "${key:0:1}" == = ] \
-            && printf " $CYAN$key$NORM $(_prettyPrintGraph ${sheap[$key]})\n"
-      done
-      printf " $(_prettyPrintGraph ${sheap[=top]})\n"
-    fi
+    echo -ne "$WHITE--Dependencies--------$NORM\n"
+    for key in ${!sheap[*]}
+    do
+      [ ${key} != =top ] && [ "${key:0:1}" == = ] \
+          && printf " $CYAN$key$NORM $(_prettyPrintGraph ${sheap[$key]})\n"
+    done
+    printf " $(_prettyPrintGraph ${sheap[=top]})\n"
 
     echo -ne "$WHITE--Scheduled--------$NORM\n"
 }
