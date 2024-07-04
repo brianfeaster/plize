@@ -303,7 +303,7 @@ function generateStandaloneScript () {
     printf 'function main () {\nlocal -\nset +e +m -f\n'
     declare -p NORM RED GREEN YELLOW CYAN IRED IGREEN IMAGENTA WHITE quiet debug cpus logfile topdependency taskStates tasksTimeStarted sheap
     printf 'startScheduler\n}\n'
-    declare -f startScheduler spawnMaxCpus spawnNextReady spawnNextReadyNode spawnNextReadyList spawnTask waitForAnyTask prettyPrintEverything colorizeTaskState _prettyPrintEverything prettyPrintGraph _prettyPrintGraph reportTaskFail reportSpawned reportWaitingOnPid reportTaskCompleted
+    declare -f startScheduler spawnMaxCpus spawnNextReady _spawnNextReadyNode _spawnNextReadyList spawnTask waitForAnyTask prettyPrintEverything colorizeTaskState _prettyPrintEverything prettyPrintGraph _prettyPrintGraph reportTaskFail reportSpawned reportWaitingOnPid reportTaskCompleted
     echo main
   } > $outputscript
   chmod u+x $outputscript
@@ -335,13 +335,13 @@ function spawnNextReady () {
   read task tasks <<<$1
   if [ "$tasks" ]
   then
-   spawnNextReadyList
+   _spawnNextReadyList
   else
-    spawnNextReadyNode
+    _spawnNextReadyNode
   fi
 }
 
-function spawnNextReadyList () {
+function _spawnNextReadyList () {
   local op=$task tasksFinished=1
   for task in $tasks
   do
@@ -366,7 +366,7 @@ function spawnNextReadyList () {
   return $((tasksFinished ? 2 : 1))
 }
 
-function spawnNextReadyNode () {
+function _spawnNextReadyNode () {
   case ${task:0:1} in
     (=) # follow sub dependency
       spawnNextReady "${sheap[$task]}"
